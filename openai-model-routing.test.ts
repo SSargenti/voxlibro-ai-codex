@@ -6,7 +6,7 @@ import {
   selectEscalatedModel,
 } from './src/openAiModelRouting';
 
-describe('OpenAI model routing', () => {
+describe('OpenAI model routing and provider-specific errors', () => {
   it('usa Luna, Terra e Sol nos perfis padrão', () => {
     expect(OPENAI_TEXT_TIERS.bulk).toBe(process.env.VOXLIBRO_BULK_MODEL || 'gpt-5.6-luna');
     expect(OPENAI_TEXT_TIERS.editorial).toBe(process.env.VOXLIBRO_EDITORIAL_MODEL || 'gpt-5.6-terra');
