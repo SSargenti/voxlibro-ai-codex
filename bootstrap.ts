@@ -1,4 +1,5 @@
 import { registerProjectBackupRoutes } from './src/projectBackup';
+import { installOpenAiModelRouter } from './src/openAiModelRouter';
 
 async function bootstrap() {
   const previousVitest = process.env.VITEST;
@@ -8,6 +9,8 @@ async function bootstrap() {
 
   if (previousVitest === undefined) delete process.env.VITEST;
   else process.env.VITEST = previousVitest;
+
+  installOpenAiModelRouter(server);
 
   registerProjectBackupRoutes(server.app, () => ({
     projectsRoot: server.PROJECTS_ROOT,
