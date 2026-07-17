@@ -34,4 +34,13 @@ describe('Regressões da navegação e do fluxo', () => {
     expect(source).toContain('Som de contexto · Freesound');
     expect(source).toContain('role="alert"');
   });
+
+  it('permite revisão editorial da tradução e da Bíblia narrativa', () => {
+    expect(source).toContain('Tradução editável');
+    expect(source).toContain('/translation`');
+    expect(source).toContain('Bíblia narrativa editável');
+    expect(source).toContain('/merge-characters');
+    expect(source).toContain('/split-character');
+    expect(source).toContain('Definir narrador');
+  });
 });

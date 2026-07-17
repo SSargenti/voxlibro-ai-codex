@@ -4321,6 +4321,37 @@ app.post('/api/projects/:projectId/translate', async (req, res) => {
   }
 });
 
+// Manual editorial review. The source stays immutable; only the translated layer changes.
+app.put('/api/projects/:projectId/chapters/:chapterId/translation', (req, res) => {
+  try {
+    const { projectId, chapterId } = req.params;
+    const translatedText = String(req.body?.translatedText || '').trim();
+    if (!translatedText) return res.status(400).json({ error: 'A tradução revisada não pode ficar vazia' });
+    const projDir = path.join(PROJECTS_ROOT, projectId);
+    const chaptersFile = path.join(projDir, 'normalized/chapters.json');
+    if (!fs.existsSync(chaptersFile)) return res.status(404).json({ error: 'Capítulos não encontrados' });
+    const chapters: any[] = JSON.parse(fs.readFileSync(chaptersFile, 'utf8'));
+    const chapter = chapters.find(item => item.chapterId === chapterId);
+    if (!chapter) return res.status(404).json({ error: 'Capítulo não encontrado' });
+    chapter.translatedText = translatedText;
+    chapter.status = 'translated_reviewed';
+    chapter.translationReviewedAt = new Date().toISOString();
+    fs.writeFileSync(chaptersFile, JSON.stringify(chapters, null, 2));
+    const translationDir = path.join(projDir, 'translation'); fs.mkdirSync(translationDir, { recursive:true });
+    fs.writeFileSync(path.join(translationDir, `${chapterId}.pt-BR.txt`), translatedText);
+    const projects = getProjects(); const project = projects.find(item => item.projectId === projectId);
+    if (project) { project.status = 'analyzing_characters'; project.translationNeedsBibleReview = true; project.updatedAt = new Date().toISOString(); saveProjects(projects); }
+    const segmentsFile = path.join(projDir, 'scripts/segments.json');
+    if (fs.existsSync(segmentsFile)) {
+      const segments: any[] = JSON.parse(fs.readFileSync(segmentsFile,'utf8'));
+      segments.filter(seg => seg.chapterId === chapterId).forEach(seg => { seg.status = 'pending'; seg.translationStale = true; });
+      fs.writeFileSync(segmentsFile, JSON.stringify(segments,null,2));
+    }
+    writeStructuredLog(projectId, 'translation_review', 'success', { chapterId });
+    res.json({ project, chapter, chapters });
+  } catch (err:any) { res.status(500).json({ error: err.message || String(err) }); }
+});
+
 // Helper to check if two character names are similar (ambiguous candidates)
 export function areNamesSimilar(name1: string, name2: string): boolean {
   const n1 = name1.toLowerCase().trim();
@@ -4978,6 +5009,49 @@ app.post('/api/projects/:projectId/merge-characters', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message || String(err) });
   }
+});
+
+app.put('/api/projects/:projectId/characters/:characterId', (req, res) => {
+  try {
+    const { projectId, characterId } = req.params; const projDir = path.join(PROJECTS_ROOT, projectId);
+    const charactersFile = path.join(projDir, 'narrative-bible/characters.json');
+    if (!fs.existsSync(charactersFile)) return res.status(404).json({ error:'Bíblia narrativa não encontrada' });
+    const characters:any[] = JSON.parse(fs.readFileSync(charactersFile,'utf8')); const character = characters.find(c => c.characterId === characterId);
+    if (!character) return res.status(404).json({ error:'Personagem não encontrado' });
+    const canonicalName = String(req.body?.canonicalName ?? character.canonicalName).trim();
+    if (!canonicalName) return res.status(400).json({ error:'O nome canônico é obrigatório' });
+    const aliases = Array.isArray(req.body?.aliases) ? req.body.aliases.map((a:any)=>String(a).trim()).filter((a:string)=>a && !isGenericCharacterAlias(a) && a.toLowerCase() !== canonicalName.toLowerCase()) : character.aliases;
+    const role = ['protagonist','antagonist','main','supporting','narrator'].includes(req.body?.role) ? req.body.role : character.role;
+    const previousNarrator = characters.find(c => c.role === 'narrator' && c.characterId !== characterId);
+    if (role === 'narrator') characters.forEach(c => { if (c.characterId !== characterId && c.role === 'narrator') c.role = 'supporting'; });
+    Object.assign(character, { canonicalName, aliases:Array.from(new Set(aliases)), role, description:String(req.body?.description ?? character.description ?? '').trim() });
+    fs.writeFileSync(charactersFile, JSON.stringify(characters,null,2));
+    const segmentsFile = path.join(projDir,'scripts/segments.json');
+    if (role === 'narrator' && previousNarrator && fs.existsSync(segmentsFile)) {
+      const segments:any[] = JSON.parse(fs.readFileSync(segmentsFile,'utf8'));
+      segments.forEach(seg => { if (seg.speakerId === previousNarrator.characterId) { seg.speakerId = characterId; seg.status='pending'; } });
+      fs.writeFileSync(segmentsFile, JSON.stringify(segments,null,2));
+    }
+    res.json({ characters });
+  } catch(err:any) { res.status(500).json({ error:err.message || String(err) }); }
+});
+
+app.post('/api/projects/:projectId/split-character', (req,res) => {
+  try {
+    const { projectId } = req.params; const sourceCharacterId=String(req.body?.sourceCharacterId||''); const alias=String(req.body?.alias||'').trim();
+    if (!sourceCharacterId || !alias || isGenericCharacterAlias(alias)) return res.status(400).json({ error:'Selecione um alias válido para separar' });
+    const projDir=path.join(PROJECTS_ROOT,projectId); const charactersFile=path.join(projDir,'narrative-bible/characters.json');
+    if (!fs.existsSync(charactersFile)) return res.status(404).json({ error:'Bíblia narrativa não encontrada' });
+    const characters:any[]=JSON.parse(fs.readFileSync(charactersFile,'utf8')); const source=characters.find(c=>c.characterId===sourceCharacterId);
+    if (!source || !(source.aliases||[]).some((a:string)=>a.toLowerCase()===alias.toLowerCase())) return res.status(404).json({ error:'Alias não encontrado no personagem' });
+    if (characters.some(c=>c.canonicalName.toLowerCase()===alias.toLowerCase())) return res.status(409).json({ error:'Já existe um personagem com esse nome' });
+    source.aliases=source.aliases.filter((a:string)=>a.toLowerCase()!==alias.toLowerCase());
+    const aliasSlug=alias.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');
+    const base=`char_${aliasSlug || crypto.randomUUID().slice(0,8)}`; let characterId=base; let suffix=2; while(characters.some(c=>c.characterId===characterId)) characterId=`${base}_${suffix++}`;
+    const separated={ ...source, characterId, canonicalName:alias, aliases:[], role:'supporting', voiceAssignment:undefined, voiceAssignmentId:undefined, voiceRecommendations:[], createdFromAliasOf:sourceCharacterId };
+    characters.push(separated); fs.writeFileSync(charactersFile,JSON.stringify(characters,null,2));
+    res.json({ characters, separatedCharacter:separated, warning:'Revise no roteiro quais falas pertencem ao novo personagem.' });
+  } catch(err:any) { res.status(500).json({ error:err.message || String(err) }); }
 });
 
 // Helper function to resolve speaker IDs or names returned by Gemini to actual valid character IDs
