@@ -74,9 +74,17 @@ function chaptersPath(storage: TranslationMemoryStorage, projectId: string) {
   return path.join(storage.projectsRoot, projectId, 'normalized', 'chapters.json');
 }
 
-function projectExists(storage: TranslationMemoryStorage, projectId: string) {
+function readProjects(storage: TranslationMemoryStorage) {
   const projects = readJson<any[]>(storage.projectsDbFile, []);
-  return Array.isArray(projects) && projects.some(project => project.projectId === projectId);
+  return Array.isArray(projects) ? projects : [];
+}
+
+function getProject(storage: TranslationMemoryStorage, projectId: string) {
+  return readProjects(storage).find(project => project.projectId === projectId);
+}
+
+function projectExists(storage: TranslationMemoryStorage, projectId: string) {
+  return Boolean(getProject(storage, projectId));
 }
 
 export function readGlossary(storage: TranslationMemoryStorage, projectIdInput: string): GlossaryEntry[] {
@@ -110,7 +118,9 @@ export function normalizeGlossaryEntries(rawEntries: unknown, existingEntries: G
       sourceTerm,
       preferredTranslation,
       notes: normalizeText((raw as any).notes || previous?.notes || '') || undefined,
-      locked: (raw as any).locked !== false,
+      // O glossário do VoxLibro é uma memória obrigatória: qualquer termo salvo
+      // precisa ser respeitado por todos os blocos e verificado na auditoria final.
+      locked: true,
       occurrences: Number.isFinite(Number((raw as any).occurrences)) ? Math.max(0, Number((raw as any).occurrences)) : previous?.occurrences,
       createdAt: previous?.createdAt || now,
       updatedAt: now,
@@ -172,7 +182,7 @@ export function auditGlossaryConsistency(
   projectIdInput: string,
 ) {
   const projectId = safeProjectId(projectIdInput);
-  const entries = readGlossary(storage, projectId).filter(entry => entry.locked);
+  const entries = readGlossary(storage, projectId);
   const filePath = chaptersPath(storage, projectId);
   if (!fs.existsSync(filePath)) throw new Error('A obra ainda não possui capítulos normalizados.');
   const chapters = readJson<any[]>(filePath, []);
@@ -220,7 +230,7 @@ export function toTranslationJobGlossary(entries: GlossaryEntry[]) {
     translation: entry.preferredTranslation,
     sourceTerm: entry.sourceTerm,
     preferredTranslation: entry.preferredTranslation,
-    locked: entry.locked,
+    locked: true,
   }));
 }
 
@@ -270,14 +280,44 @@ export function registerTranslationMemoryRoutes(
 
   app.post('/api/projects/:projectId/translation/automated', (req: Request, res: Response) => {
     try {
-      const entries = readGlossary(storageProvider(), req.params.projectId);
-      const job = dependencies.startProjectJob(req.params.projectId, 'translation', {
+      const storage = storageProvider();
+      const projectId = safeProjectId(req.params.projectId);
+      const projects = readProjects(storage);
+      const project = projects.find(item => item.projectId === projectId);
+      if (!project) {
+        return res.status(404).json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Projeto não encontrado.' } });
+      }
+      if (project.translationEnabled === false) {
+        return res.status(409).json({
+          error: {
+            code: 'TRANSLATION_DISABLED',
+            message: 'A tradução está desativada para este projeto. Ative-a na etapa Obra antes de iniciar o processamento.',
+          },
+        });
+      }
+      const chapterFile = chaptersPath(storage, projectId);
+      if (!fs.existsSync(chapterFile)) {
+        return res.status(409).json({ error: { code: 'CHAPTERS_NOT_FOUND', message: 'Nenhum capítulo normalizado está disponível para tradução.' } });
+      }
+      const chapters = readJson<any[]>(chapterFile, []);
+      if (!chapters.length) {
+        return res.status(409).json({ error: { code: 'CHAPTERS_EMPTY', message: 'A obra não possui capítulos traduzíveis.' } });
+      }
+
+      const entries = readGlossary(storage, projectId);
+      const job = dependencies.startProjectJob(projectId, 'translation', {
         style: req.body?.style || 'literário',
         forceFresh: req.body?.forceFresh === true,
         glossaryEntries: toTranslationJobGlossary(entries),
         glossaryVersion: crypto.createHash('sha256').update(JSON.stringify(entries)).digest('hex'),
       });
-      return res.json({ job, glossaryEntries: entries.length });
+
+      project.status = job.status === 'completed' ? 'analyzing_characters' : 'translating';
+      project.lastError = undefined;
+      project.updatedAt = new Date().toISOString();
+      atomicWrite(storage.projectsDbFile, projects);
+
+      return res.json({ project, chapters, job, glossaryEntries: entries.length });
     } catch (error: any) {
       return res.status(400).json({ error: { code: 'AUTOMATED_TRANSLATION_START_FAILED', message: error?.message || 'Não foi possível iniciar a tradução automatizada.' } });
     }
