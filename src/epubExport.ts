@@ -9,6 +9,9 @@ import {
   type TranslatedBookStorage,
 } from './translatedBookExport';
 
+const MIMETYPE_PLACEHOLDER = '00000000';
+const EPUB_MIMETYPE = 'application/epub+zip';
+
 function xmlEscape(value: string) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -182,12 +185,51 @@ nav li {
   margin-bottom: .5em;
 }`;
 
+function replaceZipEntryName(buffer: Buffer, previousName: string, nextName: string) {
+  const previous = Buffer.from(previousName, 'utf8');
+  const next = Buffer.from(nextName, 'utf8');
+  if (previous.length !== next.length) throw new Error('Os nomes ZIP substituídos precisam ter o mesmo tamanho.');
+  const patched = Buffer.from(buffer);
+  let offset = 0;
+  let replacements = 0;
+  while (offset < patched.length) {
+    const index = patched.indexOf(previous, offset);
+    if (index < 0) break;
+    next.copy(patched, index);
+    replacements += 1;
+    offset = index + next.length;
+  }
+  if (replacements < 2) throw new Error('Não foi possível registrar o mimetype nos cabeçalhos ZIP do EPUB.');
+  return patched;
+}
+
+export function inspectFirstLocalZipEntry(buffer: Buffer) {
+  if (buffer.length < 30 || buffer.readUInt32LE(0) !== 0x04034b50) {
+    throw new Error('Arquivo ZIP inválido: cabeçalho local inicial ausente.');
+  }
+  const method = buffer.readUInt16LE(8);
+  const compressedSize = buffer.readUInt32LE(18);
+  const fileNameLength = buffer.readUInt16LE(26);
+  const extraLength = buffer.readUInt16LE(28);
+  const nameStart = 30;
+  const dataStart = nameStart + fileNameLength + extraLength;
+  const fileName = buffer.subarray(nameStart, nameStart + fileNameLength).toString('utf8');
+  return {
+    fileName,
+    method,
+    data: buffer.subarray(dataStart, dataStart + compressedSize),
+  };
+}
+
 export function createEpub3(book: CanonicalTranslatedBook) {
   if (!book.chapters.length) throw new Error('O EPUB precisa conter ao menos um capítulo.');
   const zip = new AdmZip();
 
-  zip.addFile('mimetype', Buffer.from('application/epub+zip', 'utf8'));
-  const mimetype = zip.getEntry('mimetype');
+  // adm-zip ordena as entradas na serialização. O marcador alfanumérico fica
+  // fisicamente em primeiro lugar e é substituído por "mimetype" mantendo o
+  // mesmo tamanho, tanto no cabeçalho local quanto no diretório central.
+  zip.addFile(MIMETYPE_PLACEHOLDER, Buffer.from(EPUB_MIMETYPE, 'utf8'));
+  const mimetype = zip.getEntry(MIMETYPE_PLACEHOLDER);
   if (!mimetype) throw new Error('Não foi possível criar o arquivo mimetype do EPUB.');
   mimetype.header.method = 0;
 
@@ -205,19 +247,19 @@ export function createEpub3(book: CanonicalTranslatedBook) {
     zip.addFile(`OEBPS/text/${chapterFileName(index)}`, Buffer.from(renderChapterXhtml(book, index), 'utf8'));
   });
 
-  const buffer = zip.toBuffer();
+  const buffer = replaceZipEntryName(zip.toBuffer(), MIMETYPE_PLACEHOLDER, 'mimetype');
   validateEpub3(buffer, book.chapters.length);
   return buffer;
 }
 
 export function validateEpub3(buffer: Buffer, expectedChapters: number) {
-  const zip = new AdmZip(buffer);
-  const entries = zip.getEntries();
-  if (!entries.length || entries[0].entryName !== 'mimetype') throw new Error('EPUB inválido: mimetype precisa ser a primeira entrada.');
-  if (entries[0].header.method !== 0) throw new Error('EPUB inválido: mimetype precisa estar sem compressão.');
-  if (entries[0].getData().toString('utf8') !== 'application/epub+zip') throw new Error('EPUB inválido: conteúdo mimetype incorreto.');
+  const firstEntry = inspectFirstLocalZipEntry(buffer);
+  if (firstEntry.fileName !== 'mimetype') throw new Error('EPUB inválido: mimetype precisa ser a primeira entrada física.');
+  if (firstEntry.method !== 0) throw new Error('EPUB inválido: mimetype precisa estar sem compressão.');
+  if (firstEntry.data.toString('utf8') !== EPUB_MIMETYPE) throw new Error('EPUB inválido: conteúdo mimetype incorreto.');
 
-  const required = ['META-INF/container.xml', 'OEBPS/package.opf', 'OEBPS/nav.xhtml', 'OEBPS/title.xhtml', 'OEBPS/styles/book.css'];
+  const zip = new AdmZip(buffer);
+  const required = ['mimetype', 'META-INF/container.xml', 'OEBPS/package.opf', 'OEBPS/nav.xhtml', 'OEBPS/title.xhtml', 'OEBPS/styles/book.css'];
   for (const file of required) {
     if (!zip.getEntry(file)) throw new Error(`EPUB inválido: arquivo obrigatório ausente (${file}).`);
   }
