@@ -34,11 +34,33 @@ import {
   detectLanguageLocally,
   extractDialogueSpeakerCandidates,
   isGenericCharacterAlias,
+  recommendVoiceForCharacter,
   type OcrState,
   type OcrBatch
 } from './server.ts';
 
 describe('Regressões da auditoria funcional', () => {
+  it('combina sexo, idade, timbre e energia do personagem com o perfil da voz', () => {
+    const result = recommendVoiceForCharacter({
+      canonicalName: 'Helena', role: 'character', genderPresentation: 'female',
+      estimatedAge: 'jovem adulta', description: 'jovem firme e brilhante',
+      personality: ['intensa'], speechStyle: { energy: 'high', timbre: 'bright' }
+    }, ['gemini']);
+    expect(result.recommended.profile.gender).toBe('female');
+    expect(result.recommended.score).toBeGreaterThanOrEqual(75);
+    expect(result.recommended.reasons).toContain('voz feminina');
+  });
+
+  it('favorece estabilidade e energia baixa para narradores maduros', () => {
+    const result = recommendVoiceForCharacter({
+      canonicalName: 'Narrador', role: 'narrator', genderPresentation: 'male',
+      estimatedAge: 'maduro', description: 'voz grave, calma e pausada'
+    }, ['gemini']);
+    expect(result.recommended.profile.gender).toBe('male');
+    expect(result.recommended.profile.energy).not.toBe('high');
+    expect(result.recommended.reasons).toContain('estabilidade para narração');
+  });
+
   it('preserva personagens nomeados que pronunciam falas isoladas', () => {
     const text = '— Não abra a porta — avisou Clara com voz firme. Uma menina chamada Clara apareceu na escada.';
     expect(extractDialogueSpeakerCandidates(text).map(candidate => candidate.candidateName)).toContain('Clara');

@@ -13,6 +13,8 @@ Estúdio local de uso individual para transformar PDF, DOCX, EPUB, TXT e HTML em
 - nenhum fallback para `speechSynthesis` ou áudio simulado;
 - cache por voz, modelo, texto e direção;
 - edição e regeneração por segmento;
+- casting inteligente por sexo vocal, idade, timbre, energia e expressividade;
+- ambientes e efeitos do Freesound com prévia, mixagem e atribuição no pacote final;
 - exportação validada com manifesto e checksums.
 
 ## Modelos de texto
@@ -42,6 +44,7 @@ Abra `http://localhost:3000`. Também é possível inserir as três chaves na te
 - `OPENAI_API_KEY`: obrigatória para análise textual, tradução, bíblia e roteiro.
 - `GEMINI_API_KEY`: necessária somente para Gemini TTS.
 - `GOOGLE_CLOUD_TTS_API_KEY`: necessária somente para WaveNet/Neural2, ou use ADC via `GOOGLE_APPLICATION_CREDENTIALS`.
+- `FREESOUND_API_KEY`: necessária para buscar e incorporar sons de contexto; autor e licença acompanham a exportação.
 - `VOXLIBRO_MASTER_KEY`: segredo com no mínimo 32 caracteres para persistir chaves criptografadas em disco. Sem ele, use armazenamento em memória.
 
 Nunca use a mesma variável para dois serviços. Os arquivos `.env`, `.credentials/`, projetos, áudios e exports estão ignorados pelo Git.

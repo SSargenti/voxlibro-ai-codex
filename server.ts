@@ -208,6 +208,7 @@ export function mapAndSanitizeTtsError(err: any): { code: string; message: strin
 export let sessionGcpTtsApiKey: string | null = null;
 export let sessionGeminiApiKey: string | null = null;
 export let sessionOpenAiApiKey: string | null = null;
+export let sessionFreesoundApiKey: string | null = null;
 export let gcpValidationStatus: 'unconfigured' | 'configured_untested' | 'valid' | 'invalid' | 'no_permission' | 'api_disabled' | 'billing_missing' = 'unconfigured';
 export let gcpLastValidatedAt: string | null = null;
 export let savedGcpTtsMethod: 'apiKey' | 'adc' = 'apiKey';
@@ -421,6 +422,36 @@ export const GEMINI_TTS_VOICES = [
   'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird', 'Zubenelgenubi',
   'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat'
 ];
+
+export type VoiceProfile = { id: string; providerId: 'gemini'|'gemini-pro'|'gcp'; voiceName: string; label: string; gender: 'female'|'male'|'neutral'; age: 'young'|'adult'|'mature'|'any'; timbre: 'bright'|'warm'|'firm'|'soft'|'gravelly'|'smooth'|'clear'|'neutral'; energy: 'low'|'medium'|'high'; expressiveness: number; costTier: 'economic'|'standard'|'premium' };
+const geminiTraits: Record<string, [VoiceProfile['gender'], VoiceProfile['age'], VoiceProfile['timbre'], VoiceProfile['energy'], number, string]> = {
+  Zephyr:['female','adult','bright','medium',.9,'brilhante'], Puck:['male','young','bright','high',.95,'animada'], Charon:['male','mature','clear','low',.75,'informativa'], Kore:['female','adult','firm','medium',.9,'firme'], Fenrir:['male','adult','gravelly','high',.95,'intensa'], Leda:['female','young','bright','medium',.9,'jovem'], Orus:['male','adult','firm','medium',.85,'firme'], Aoede:['female','adult','soft','medium',.9,'leve'], Enceladus:['male','mature','soft','low',.8,'sussurrada'], Sulafat:['female','mature','warm','low',.85,'acolhedora'], Gacrux:['female','mature','warm','low',.8,'madura'], Achird:['male','adult','warm','medium',.85,'amigável'], Algenib:['male','mature','gravelly','medium',.85,'rouca'], Schedar:['male','adult','neutral','medium',.8,'equilibrada']
+};
+export const VOICE_CATALOG: VoiceProfile[] = [
+  ...Object.entries(geminiTraits).flatMap(([voiceName, t]) => (['gemini','gemini-pro'] as const).map(providerId => ({ id:`${providerId}:${voiceName}`, providerId, voiceName, label:`${voiceName} · ${t[5]}`, gender:t[0], age:t[1], timbre:t[2], energy:t[3], expressiveness:t[4], costTier:(providerId === 'gemini' ? 'standard' : 'premium') as VoiceProfile['costTier'] }))),
+  ...ACTUAL_PT_BR_VOICES.filter(v => /Neural2|Wavenet/.test(v.voiceName)).map(v => ({ id:`gcp:${v.voiceName}`, providerId:'gcp' as const, voiceName:v.voiceName, label:`${v.voiceName.replace('pt-BR-','')} · ${v.gender === 'female' ? 'feminina' : 'masculina'}`, gender:v.gender as VoiceProfile['gender'], age:'any' as const, timbre:'neutral' as const, energy:'medium' as const, expressiveness:v.voiceName.includes('Wavenet') ? .7 : .65, costTier:'economic' as const }))
+];
+
+export function recommendVoiceForCharacter(character: any, availableProviders: string[] = ['gemini','gemini-pro','gcp']) {
+  const desiredGender = character.genderPresentation === 'female' || character.genderPresentation === 'male' ? character.genderPresentation : 'neutral';
+  const ageText = `${character.estimatedAge || ''} ${(character.description || '')}`.toLowerCase();
+  const desiredAge: VoiceProfile['age'] = /crian|menina|menino|jovem|adolesc/.test(ageText) ? 'young' : /velh|idos|madur|ancian/.test(ageText) ? 'mature' : 'adult';
+  const traitText = `${character.description || ''} ${(character.personality || []).join(' ')} ${JSON.stringify(character.speechStyle || {})}`.toLowerCase();
+  const desiredTimbre: VoiceProfile['timbre'] = /grave|rouc/.test(traitText) ? 'gravelly' : /firme|autor/.test(traitText) ? 'firm' : /suave|delic|sussurr/.test(traitText) ? 'soft' : /calor|acolhed/.test(traitText) ? 'warm' : /clara|brilh|jov/.test(traitText) ? 'bright' : 'neutral';
+  const desiredEnergy: VoiceProfile['energy'] = /enérg|intens|agitado|entusiasm/.test(traitText) ? 'high' : /calm|pausad|lento|seren/.test(traitText) ? 'low' : 'medium';
+  const ranked = VOICE_CATALOG.filter(v => availableProviders.includes(v.providerId)).map(voice => {
+    let score = 30;
+    const reasons: string[] = [];
+    if (desiredGender === 'neutral' || voice.gender === desiredGender) { score += 30; reasons.push(desiredGender === 'neutral' ? 'gênero vocal flexível' : `voz ${desiredGender === 'female' ? 'feminina' : 'masculina'}`); }
+    if (voice.age === 'any' || voice.age === desiredAge) { score += 15; reasons.push(`idade vocal ${desiredAge}`); }
+    if (voice.timbre === desiredTimbre || desiredTimbre === 'neutral') { score += 15; reasons.push(`timbre ${voice.timbre}`); }
+    if (voice.energy === desiredEnergy) { score += 10; reasons.push(`energia ${desiredEnergy}`); }
+    if (character.role === 'narrator' && voice.energy !== 'high') { score += 8; reasons.push('estabilidade para narração'); }
+    if (character.role !== 'narrator' && voice.expressiveness >= .85) { score += 7; reasons.push('boa expressividade dramática'); }
+    return { voiceId: voice.id, score: Math.min(100, score), reasons, profile: voice };
+  }).sort((a,b) => b.score - a.score);
+  return { desired: { gender: desiredGender, age: desiredAge, timbre: desiredTimbre, energy: desiredEnergy }, ranked: ranked.slice(0,5), recommended: ranked[0] };
+}
 
 
 const app = express();
@@ -2566,8 +2597,83 @@ app.get('/api/capabilities', async (req, res) => {
     credentialSource: gcpCreds.source,
     validationStatus: gcpValidationStatus,
     translation: hasTextAi(),
-    tts: hasGeminiKey || hasGcp
+    tts: hasGeminiKey || hasGcp,
+    freesound: !!(sessionFreesoundApiKey || process.env.FREESOUND_API_KEY)
   });
+});
+
+app.get('/api/voices/catalog', (_req, res) => {
+  const geminiAvailable = !!getActiveGeminiApiKey();
+  const gcpAvailable = isGcpConfiguredSync() && gcpValidationStatus === 'valid';
+  res.json({ voices: VOICE_CATALOG.map(voice => ({
+    ...voice,
+    available: voice.providerId === 'gcp' ? gcpAvailable : geminiAvailable
+  })) });
+});
+
+app.get('/api/freesound/search', async (req, res) => {
+  try {
+    const token = sessionFreesoundApiKey || process.env.FREESOUND_API_KEY;
+    if (!token) return res.status(400).json({ error: 'FREESOUND_API_KEY não configurada' });
+    const query = String(req.query.query || '').trim().slice(0, 120);
+    if (query.length < 2) return res.status(400).json({ error: 'Informe um contexto com pelo menos 2 caracteres' });
+    const params = new URLSearchParams({ query, token, page_size: '12', fields: 'id,name,description,tags,license,username,duration,previews,url,download' });
+    const response = await fetch(`https://freesound.org/apiv2/search/?${params}`, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error(`Freesound respondeu HTTP ${response.status}`);
+    const data: any = await response.json();
+    res.json({ results: (data.results || []).map((sound: any) => ({ id:sound.id, name:sound.name, description:sound.description, tags:sound.tags, license:sound.license, username:sound.username, duration:sound.duration, pageUrl:sound.url, previewUrl:sound.previews?.['preview-hq-mp3'] || sound.previews?.['preview-lq-mp3'] })) });
+  } catch (err: any) { res.status(502).json({ error: redactSensitiveData(err.message) }); }
+});
+
+app.put('/api/settings/credentials/freesound', (req, res) => {
+  const apiKey = String(req.body?.apiKey || '').trim();
+  if (!apiKey) return res.status(400).json({ error: 'Chave Freesound obrigatória' });
+  sessionFreesoundApiKey = apiKey;
+  res.json({ status:'success' });
+});
+
+app.post('/api/projects/:projectId/context-sounds', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { segmentId, sound, volume = .12 } = req.body || {};
+    const projDir = path.join(PROJECTS_ROOT, projectId);
+    if (!fs.existsSync(projDir)) return res.status(404).json({ error:'Projeto não encontrado' });
+    const preview = new URL(String(sound?.previewUrl || ''));
+    if (!preview.hostname.endsWith('freesound.org')) return res.status(400).json({ error:'URL de prévia Freesound inválida' });
+    const response = await fetch(preview, { signal: AbortSignal.timeout(20000) });
+    if (!response.ok) throw new Error(`Falha ao baixar prévia: HTTP ${response.status}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!buffer.length || buffer.length > 20 * 1024 * 1024) throw new Error('Prévia vazia ou acima de 20 MB');
+    const dir = path.join(projDir, 'audio/context'); fs.mkdirSync(dir, { recursive:true });
+    const safeId = String(sound.id).replace(/[^0-9]/g,'');
+    const localPath = path.join(dir, `${safeId}.mp3`); fs.writeFileSync(localPath, buffer);
+    const file = path.join(projDir, 'audio/context-sounds.json');
+    const list = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file,'utf8')) : [];
+    const cue = { segmentId, soundId:sound.id, name:sound.name, username:sound.username, license:sound.license, pageUrl:sound.pageUrl, previewUrl:sound.previewUrl, localPath:`/projects/${projectId}/audio/context/${safeId}.mp3`, volume:Math.max(.03,Math.min(.35,Number(volume)||.12)) };
+    const next = [...list.filter((item:any) => item.segmentId !== segmentId), cue];
+    fs.writeFileSync(file, JSON.stringify(next,null,2));
+    res.json({ cue });
+  } catch (err:any) { res.status(500).json({ error:redactSensitiveData(err.message) }); }
+});
+
+app.post('/api/projects/:projectId/context-sounds/mix', async (req, res) => {
+  try {
+    const { projectId } = req.params; const projDir = path.join(PROJECTS_ROOT, projectId);
+    const segFile = path.join(projDir,'scripts/segments.json'); const cueFile = path.join(projDir,'audio/context-sounds.json');
+    if (!fs.existsSync(segFile) || !fs.existsSync(cueFile)) return res.status(400).json({ error:'Roteiro ou sons contextuais ausentes' });
+    const segments = JSON.parse(fs.readFileSync(segFile,'utf8')); const cues = JSON.parse(fs.readFileSync(cueFile,'utf8'));
+    const outDir = path.join(projDir,'audio/contextualized'); fs.mkdirSync(outDir,{recursive:true}); let mixed=0;
+    for (const cue of cues) {
+      const segment = segments.find((item:any) => item.segmentId === cue.segmentId);
+      if (!segment?.audioPath) continue;
+      const voicePath = path.join(projDir,'audio/segments',path.basename(segment.audioPath));
+      const bgPath = path.join(projDir,'audio/context',path.basename(cue.localPath));
+      const output = path.join(outDir,`${segment.segmentId}.wav`);
+      await runFfmpeg(['-y','-i',voicePath,'-stream_loop','-1','-i',bgPath,'-filter_complex',`[1:a]volume=${cue.volume},afade=t=in:st=0:d=0.4[bg];[0:a][bg]amix=inputs=2:duration=first:dropout_transition=1`,'-ar','24000','-ac','1','-c:a','pcm_s16le',output]);
+      segment.contextualAudioPath = `/projects/${projectId}/audio/contextualized/${segment.segmentId}.wav`; mixed++;
+    }
+    fs.writeFileSync(segFile,JSON.stringify(segments,null,2)); res.json({ success:true,mixed,segments });
+  } catch (err:any) { res.status(500).json({ error:redactSensitiveData(err.message) }); }
 });
 
 // GET credentials status
@@ -2618,7 +2724,8 @@ app.get('/api/settings/credentials/status', async (req, res) => {
         source: geminiSource,
         validationStatus: geminiConfigured ? 'valid' : 'unconfigured',
         updatedAt: new Date().toISOString()
-      }
+      },
+      freesound: { provider:'freesound', configured:!!(sessionFreesoundApiKey || process.env.FREESOUND_API_KEY), source:process.env.FREESOUND_API_KEY ? 'env_freesound' : sessionFreesoundApiKey ? 'stored_session' : 'none', validationStatus:(sessionFreesoundApiKey || process.env.FREESOUND_API_KEY) ? 'configured_untested' : 'unconfigured', updatedAt:new Date().toISOString() }
     });
   } catch (err) {
     res.status(500).json({ error: redactSensitiveData(err.message) });
@@ -3005,6 +3112,9 @@ app.get('/api/projects/:projectId', (req, res) => {
   if (fs.existsSync(logsFile)) {
     logs = JSON.parse(fs.readFileSync(logsFile, 'utf8'));
   }
+  let contextSounds: any[] = [];
+  const contextSoundsFile = path.join(projDir, 'audio/context-sounds.json');
+  if (fs.existsSync(contextSoundsFile)) contextSounds = JSON.parse(fs.readFileSync(contextSoundsFile,'utf8'));
 
   res.json({
     project,
@@ -3015,6 +3125,7 @@ app.get('/api/projects/:projectId', (req, res) => {
     glossary,
     segments,
     logs,
+    contextSounds,
     apiQuotaState: {
       isGeminiQuotaExceeded,
       isGeminiTTSQuotaExceeded,
@@ -4380,6 +4491,9 @@ export async function performMapReduceCharacterAnalysis(
         4. "papel": Papel desempenhado no texto, que deve ser rigorosamente um destes: "protagonist", "antagonist", "main", "supporting", "narrator".
         5. "evidenceUnitIds": Lista de citações ou frases curtas exatas do texto que mostram a ação ou presença do personagem.
         6. "confidence": Grau de confiança da identificação (número entre 0.0 e 1.0).
+        7. "genderPresentation": "female", "male" ou "neutral", somente quando houver evidência textual.
+        8. "estimatedAge": "child", "young", "adult" ou "mature".
+        9. "speechStyle": objeto com "pace" (slow|moderate|fast), "energy" (low|medium|high) e "timbre" (bright|warm|firm|soft|gravelly|smooth|clear|neutral).
 
         Regras adicionais:
         - Toda pessoa nomeada que pronuncie uma fala deve aparecer como candidato, mesmo que participe apenas uma vez.
@@ -4425,6 +4539,9 @@ export async function performMapReduceCharacterAnalysis(
               papel: z.enum(['protagonist', 'antagonist', 'main', 'supporting', 'narrator']).default('supporting'),
               evidenceUnitIds: z.array(z.string()).default([]),
               confidence: z.number().min(0).max(1).default(1.0)
+              ,genderPresentation: z.enum(['female','male','neutral']).default('neutral')
+              ,estimatedAge: z.enum(['child','young','adult','mature']).default('adult')
+              ,speechStyle: z.object({ pace: z.enum(['slow','moderate','fast']).default('moderate'), energy: z.enum(['low','medium','high']).default('medium'), timbre: z.enum(['bright','warm','firm','soft','gravelly','smooth','clear','neutral']).default('neutral') }).default({ pace:'moderate', energy:'medium', timbre:'neutral' })
             }))
           }).parse(parsed);
           candidates = validated.candidates;
@@ -4618,7 +4735,9 @@ export async function performMapReduceCharacterAnalysis(
           personality: candidate.atributos || [],
           speechStyle: {
             register: 'culto',
-            pace: 'moderate',
+            pace: candidate.speechStyle?.pace || 'moderate',
+            energy: candidate.speechStyle?.energy || 'medium',
+            timbre: candidate.speechStyle?.timbre || 'neutral',
             sentenceLength: 'medium',
             emotionalExpression: 'neutral'
           },
@@ -4704,6 +4823,12 @@ export async function performMapReduceCharacterAnalysis(
   }
 
   // Persist structured files to both paths
+  for (const character of consolidatedCharacters) {
+    const recommendation = recommendVoiceForCharacter(character, [getActiveGeminiApiKey() ? 'gemini' : '', getActiveGeminiApiKey() ? 'gemini-pro' : '', isGcpConfiguredSync() ? 'gcp' : ''].filter(Boolean));
+    character.voiceProfile = recommendation.desired;
+    character.voiceRecommendations = recommendation.ranked;
+    if (!character.voiceAssignment && recommendation.recommended) character.voiceAssignmentId = recommendation.recommended.voiceId;
+  }
   fs.writeFileSync(charactersFile, JSON.stringify(consolidatedCharacters, null, 2));
   fs.writeFileSync(sightingsFile, JSON.stringify(sightingsList, null, 2));
   fs.writeFileSync(suggestionsFile, JSON.stringify(newSuggestions, null, 2));
@@ -6025,6 +6150,19 @@ export async function createExportZip(
   const segmentsFile = path.join(projDir, 'scripts/segments.json');
   addLocalFileToZip(segmentsFile, 'scripts');
 
+  const contextSoundsFile = path.join(projDir, 'audio/context-sounds.json');
+  let contextSounds: any[] = [];
+  if (fs.existsSync(contextSoundsFile)) {
+    contextSounds = JSON.parse(fs.readFileSync(contextSoundsFile, 'utf8'));
+    addLocalFileToZip(contextSoundsFile, 'context', 'attribution.json');
+    contextSounds.forEach(cue => {
+      const localPath = path.join(projDir, String(cue.localPath || '').replace(/^\/+/, ''));
+      if (path.resolve(localPath).startsWith(path.resolve(projDir) + path.sep)) {
+        addLocalFileToZip(localPath, 'context/sounds');
+      }
+    });
+  }
+
   let segments: any[] = [];
   if (fs.existsSync(segmentsFile)) {
     segments = JSON.parse(fs.readFileSync(segmentsFile, 'utf8'));
@@ -6062,7 +6200,15 @@ export async function createExportZip(
       fileName: 'single_book.mp3',
       durationMs: singleMp3Info.durationMs,
       size: singleMp3Info.size
-    } : null
+    } : null,
+    contextSounds: contextSounds.map(cue => ({
+      segmentId: cue.segmentId,
+      name: cue.name,
+      author: cue.username,
+      license: cue.license,
+      attribution: cue.attribution,
+      sourceUrl: cue.pageUrl
+    }))
   };
   addFileToZip('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2)));
 
@@ -6212,7 +6358,7 @@ app.post('/api/projects/:projectId/export', async (req, res) => {
       tempsToCleanup.push(chWavPath, chMp3Path);
 
       const inputWavs = chSegs.map(seg => ({
-        path: path.join(projDir, 'audio/segments', path.basename(seg.audioPath)),
+        path: seg.contextualAudioPath ? path.join(projDir, 'audio/contextualized', path.basename(seg.contextualAudioPath)) : path.join(projDir, 'audio/segments', path.basename(seg.audioPath)),
         pauseBeforeMs: seg.pauseBeforeMs || 0,
         pauseAfterMs: seg.pauseAfterMs || 0
       }));
@@ -6260,7 +6406,7 @@ app.post('/api/projects/:projectId/export', async (req, res) => {
     }
 
     const allInputWavs = sortedSegments.map(seg => ({
-      path: path.join(projDir, 'audio/segments', path.basename(seg.audioPath)),
+      path: seg.contextualAudioPath ? path.join(projDir, 'audio/contextualized', path.basename(seg.contextualAudioPath)) : path.join(projDir, 'audio/segments', path.basename(seg.audioPath)),
       pauseBeforeMs: seg.pauseBeforeMs || 0,
       pauseAfterMs: seg.pauseAfterMs || 0
     }));

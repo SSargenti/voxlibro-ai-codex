@@ -26,4 +26,12 @@ describe('Regressões da navegação e do fluxo', () => {
     expect(source).not.toContain('Luna · Terra · Sol');
     expect(source).toContain('GPT-5.6 · esforço baixo, médio ou alto');
   });
+
+  it('expõe casting inteligente e som contextual com atribuição', () => {
+    expect(source).toContain('Elenco de vozes inteligente');
+    expect(source).toContain('voiceRecommendations');
+    expect(source).toContain('/api/freesound/search');
+    expect(source).toContain('Som de contexto · Freesound');
+    expect(source).toContain('role="alert"');
+  });
 });
