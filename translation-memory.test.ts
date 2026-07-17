@@ -16,7 +16,7 @@ import {
 
 const tempDirs: string[] = [];
 
-function fixture(chapters?: any[]) {
+function fixture(options?: { chapters?: any[]; project?: Record<string, any> }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'voxlibro-memory-'));
   tempDirs.push(root);
   const projectsRoot = path.join(root, 'projects');
@@ -24,8 +24,15 @@ function fixture(chapters?: any[]) {
   const projectDir = path.join(projectsRoot, projectId);
   fs.mkdirSync(path.join(projectDir, 'normalized'), { recursive: true });
   const projectsDbFile = path.join(projectsRoot, 'projects.json');
-  fs.writeFileSync(projectsDbFile, JSON.stringify([{ projectId, name: 'Memory Test' }], null, 2));
-  fs.writeFileSync(path.join(projectDir, 'normalized', 'chapters.json'), JSON.stringify(chapters || [
+  fs.writeFileSync(projectsDbFile, JSON.stringify([{
+    projectId,
+    name: 'Memory Test',
+    sourceLanguage: 'en',
+    targetLanguage: 'pt-BR',
+    translationEnabled: true,
+    ...options?.project,
+  }], null, 2));
+  fs.writeFileSync(path.join(projectDir, 'normalized', 'chapters.json'), JSON.stringify(options?.chapters || [
     {
       chapterId: 'chapter_001',
       title: 'One',
@@ -48,10 +55,10 @@ afterEach(() => {
 });
 
 describe('memória persistente da tradução', () => {
-  it('normaliza aliases de campos, remove duplicatas e preserva IDs existentes', () => {
+  it('normaliza aliases, remove duplicatas, preserva IDs e força termos obrigatórios', () => {
     const previous = normalizeGlossaryEntries([{ sourceTerm: 'Aurora Station', preferredTranslation: 'Estação Aurora', locked: true }]);
     const normalized = normalizeGlossaryEntries([
-      { glossaryId: previous[0].glossaryId, term: 'Aurora Station', translation: 'Estação Aurora', locked: true },
+      { glossaryId: previous[0].glossaryId, term: 'Aurora Station', translation: 'Estação Aurora', locked: false },
       { source: 'aurora station', target: 'Outra tradução' },
       { sourceTerm: '', preferredTranslation: 'Inválido' },
     ], previous);
@@ -60,6 +67,7 @@ describe('memória persistente da tradução', () => {
     expect(normalized[0].glossaryId).toBe(previous[0].glossaryId);
     expect(normalized[0].sourceTerm).toBe('Aurora Station');
     expect(normalized[0].preferredTranslation).toBe('Estação Aurora');
+    expect(normalized[0].locked).toBe(true);
   });
 
   it('sugere nomes e locais recorrentes sem repetir termos já salvos', () => {
@@ -83,15 +91,15 @@ describe('memória persistente da tradução', () => {
     expect(fs.existsSync(path.join(projectDir, 'translation', 'glossary.json'))).toBe(true);
   });
 
-  it('audita termos bloqueados ausentes na tradução por capítulo', () => {
-    const { projectId, storage } = fixture([
+  it('audita termos obrigatórios ausentes na tradução por capítulo', () => {
+    const { projectId, storage } = fixture({ chapters: [
       {
         chapterId: 'chapter_001',
         title: 'One',
         originalText: 'Mara entered Aurora Station.',
         translatedText: 'Mara entrou na estação orbital.',
       },
-    ]);
+    ] });
     saveGlossary(storage, projectId, [{ sourceTerm: 'Aurora Station', preferredTranslation: 'Estação Aurora', locked: true }]);
     const audit = auditGlossaryConsistency(storage, projectId);
 
@@ -100,7 +108,7 @@ describe('memória persistente da tradução', () => {
     expect(audit.issues[0].code).toBe('LOCKED_TERM_NOT_FOUND');
   });
 
-  it('inicia o job integral com o glossário persistente e sua versão', async () => {
+  it('inicia o job integral com o glossário persistente, sua versão e estado translating', async () => {
     const { projectId, storage } = fixture();
     saveGlossary(storage, projectId, [{ sourceTerm: 'Aurora Station', preferredTranslation: 'Estação Aurora', locked: true }]);
     const startProjectJob = vi.fn().mockReturnValue({ jobId: 'job_translation_1', status: 'queued', progress: 0, items: [] });
@@ -114,12 +122,32 @@ describe('memória persistente da tradução', () => {
       .expect(200);
 
     expect(response.body.glossaryEntries).toBe(1);
+    expect(response.body.project.status).toBe('translating');
     expect(startProjectJob).toHaveBeenCalledTimes(1);
     expect(startProjectJob).toHaveBeenCalledWith(projectId, 'translation', expect.objectContaining({
       style: 'literário',
       glossaryEntries: [expect.objectContaining({ term: 'Aurora Station', translation: 'Estação Aurora', locked: true })],
       glossaryVersion: expect.stringMatching(/^[a-f0-9]{64}$/),
     }));
+    const persistedProject = JSON.parse(fs.readFileSync(storage.projectsDbFile, 'utf8'))[0];
+    expect(persistedProject.status).toBe('translating');
+    expect(persistedProject.lastError).toBeUndefined();
+  });
+
+  it('não inicia tradução quando ela está desativada', async () => {
+    const { projectId, storage } = fixture({ project: { translationEnabled: false } });
+    const startProjectJob = vi.fn();
+    const app = express();
+    app.use(express.json());
+    registerTranslationMemoryRoutes(app, () => storage, { startProjectJob });
+
+    const response = await request(app)
+      .post(`/api/projects/${projectId}/translation/automated`)
+      .send({ style: 'literário' })
+      .expect(409);
+
+    expect(response.body.error.code).toBe('TRANSLATION_DISABLED');
+    expect(startProjectJob).not.toHaveBeenCalled();
   });
 
   it('expõe CRUD, sugestões e auditoria por HTTP', async () => {
