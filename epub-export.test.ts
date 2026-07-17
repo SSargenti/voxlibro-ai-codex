@@ -5,7 +5,7 @@ import os from 'os';
 import path from 'path';
 import request from 'supertest';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createEpub3, registerEpubExportRoutes, validateEpub3 } from './src/epubExport';
+import { createEpub3, inspectFirstLocalZipEntry, registerEpubExportRoutes, validateEpub3 } from './src/epubExport';
 import { buildTranslatedBookArtifacts, registerTranslatedBookRoutes, type TranslatedBookStorage } from './src/translatedBookExport';
 
 const tempDirs: string[] = [];
@@ -59,11 +59,12 @@ describe('exportação EPUB 3', () => {
     const buffer = createEpub3(result.book);
 
     expect(validateEpub3(buffer, 2)).toBe(true);
+    const firstEntry = inspectFirstLocalZipEntry(buffer);
+    expect(firstEntry.fileName).toBe('mimetype');
+    expect(firstEntry.method).toBe(0);
+    expect(firstEntry.data.toString('utf8')).toBe('application/epub+zip');
+
     const zip = new AdmZip(buffer);
-    const entries = zip.getEntries();
-    expect(entries[0].entryName).toBe('mimetype');
-    expect(entries[0].header.method).toBe(0);
-    expect(entries[0].getData().toString('utf8')).toBe('application/epub+zip');
     expect(zip.readAsText('META-INF/container.xml')).toContain('OEBPS/package.opf');
     expect(zip.readAsText('OEBPS/package.opf')).toContain('version="3.0"');
     expect(zip.readAsText('OEBPS/package.opf')).toContain('<dc:language>pt-BR</dc:language>');
@@ -99,7 +100,9 @@ describe('exportação EPUB 3', () => {
       .get(`/api/projects/${projectId}/translated-book/download?format=zip`)
       .expect(200);
     const bundle = new AdmZip(Buffer.from(response.body));
-    expect(bundle.getEntry('livro-traduzido.epub')).toBeTruthy();
+    const epub = bundle.getEntry('livro-traduzido.epub');
+    expect(epub).toBeTruthy();
+    expect(validateEpub3(epub!.getData(), 2)).toBe(true);
     expect(bundle.getEntry('livro-traduzido.docx')).toBeTruthy();
     expect(bundle.getEntry('translated-book.json')).toBeTruthy();
   });
