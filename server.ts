@@ -4344,7 +4344,7 @@ app.put('/api/projects/:projectId/chapters/:chapterId/translation', (req, res) =
     const segmentsFile = path.join(projDir, 'scripts/segments.json');
     if (fs.existsSync(segmentsFile)) {
       const segments: any[] = JSON.parse(fs.readFileSync(segmentsFile,'utf8'));
-      segments.filter(seg => seg.chapterId === chapterId).forEach(seg => { seg.status = 'pending'; seg.translationStale = true; });
+      segments.filter(seg => seg.chapterId === chapterId).forEach(seg => { seg.status = 'pending'; seg.translationStale = true; seg.audioPath = undefined; seg.contextualAudioPath = undefined; });
       fs.writeFileSync(segmentsFile, JSON.stringify(segments,null,2));
     }
     writeStructuredLog(projectId, 'translation_review', 'success', { chapterId });
@@ -5000,6 +5000,9 @@ app.post('/api/projects/:projectId/merge-characters', async (req, res) => {
       segments.forEach(seg => {
         if (seg.speakerId === sourceCharacterId) {
           seg.speakerId = targetCharacterId;
+          seg.status = 'pending';
+          seg.audioPath = undefined;
+          seg.contextualAudioPath = undefined;
         }
       });
       fs.writeFileSync(segmentsFile, JSON.stringify(segments, null, 2));
@@ -5029,7 +5032,7 @@ app.put('/api/projects/:projectId/characters/:characterId', (req, res) => {
     const segmentsFile = path.join(projDir,'scripts/segments.json');
     if (role === 'narrator' && previousNarrator && fs.existsSync(segmentsFile)) {
       const segments:any[] = JSON.parse(fs.readFileSync(segmentsFile,'utf8'));
-      segments.forEach(seg => { if (seg.speakerId === previousNarrator.characterId) { seg.speakerId = characterId; seg.status='pending'; } });
+      segments.forEach(seg => { if (seg.speakerId === previousNarrator.characterId) { seg.speakerId = characterId; seg.status='pending'; seg.audioPath=undefined; seg.contextualAudioPath=undefined; } });
       fs.writeFileSync(segmentsFile, JSON.stringify(segments,null,2));
     }
     res.json({ characters });
