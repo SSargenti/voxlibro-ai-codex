@@ -4232,6 +4232,46 @@ export function areNamesSimilar(name1: string, name2: string): boolean {
   return false;
 }
 
+export function isGenericCharacterAlias(alias: string): boolean {
+  const normalized = alias.toLowerCase().trim().replace(/[.,;:!?]+$/g, '');
+  if (!normalized) return true;
+  if (/^(ele|ela|eles|elas|eu|tu|voce|você|nos|nós|vocês)$/.test(normalized)) return true;
+  return /^(?:um|uma|o|a|os|as)\s+(?:menina|menino|mulher|homem|pessoa|criança|jovem|idoso|idosa|senhor|senhora|pesquisador|pesquisadora)$/.test(normalized);
+}
+
+export function extractDialogueSpeakerCandidates(text: string): any[] {
+  const found = new Map<string, { name: string; evidence: string[] }>();
+  const add = (name: string, evidence: string) => {
+    const cleanName = name.trim().replace(/[.,;:!?]+$/g, '');
+    if (cleanName.length < 2 || ['Narrador', 'Aurora'].includes(cleanName)) return;
+    const key = cleanName.toLocaleLowerCase('pt-BR');
+    const current = found.get(key) || { name: cleanName, evidence: [] };
+    if (!current.evidence.includes(evidence.trim())) current.evidence.push(evidence.trim());
+    found.set(key, current);
+  };
+
+  const patterns = [
+    /\b(?:chamad[oa]|chama-se)\s+([A-ZÀ-Ý][\p{L}'-]{1,40})\b/gu,
+    /\b(?:disse|perguntou|respondeu|avisou|gritou|sussurrou|afirmou|declarou|continuou)\s+([A-ZÀ-Ý][\p{L}'-]{1,40})\b/gu,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const start = Math.max(0, (match.index || 0) - 80);
+      const end = Math.min(text.length, (match.index || 0) + match[0].length + 80);
+      add(match[1], text.slice(start, end));
+    }
+  }
+
+  return Array.from(found.values()).map(({ name, evidence }) => ({
+    candidateName: name,
+    aliases: [],
+    atributos: ['Personagem nomeado com fala ou menção explícita no texto'],
+    papel: 'supporting',
+    evidenceUnitIds: evidence,
+    confidence: 0.98,
+  }));
+}
+
 // Map-Reduce character identification logic with incremental processing & human edit preservation
 export async function performMapReduceCharacterAnalysis(
   projectId: string,
@@ -4330,7 +4370,7 @@ export async function performMapReduceCharacterAnalysis(
     let candidates: any[] = [];
     if (hasApiKey) {
       try {
-        const prompt = `Analise o seguinte trecho de texto de uma obra literária ou científica para identificar os narradores e personagens principais que atuam ou são mencionados de forma direta.
+        const prompt = `Analise o seguinte trecho de texto de uma obra literária ou científica para identificar os narradores e todos os personagens que atuam, falam ou são mencionados de forma direta.
         Retorne rigorosamente um objeto JSON contendo uma lista de candidatos no campo "candidates".
 
         Cada candidato deve possuir:
@@ -4342,6 +4382,8 @@ export async function performMapReduceCharacterAnalysis(
         6. "confidence": Grau de confiança da identificação (número entre 0.0 e 1.0).
 
         Regras adicionais:
+        - Toda pessoa nomeada que pronuncie uma fala deve aparecer como candidato, mesmo que participe apenas uma vez.
+        - Não use pronomes nem descrições genéricas como aliases (ex.: "ela", "uma menina", "o homem").
         - Se o projeto for do modo técnico, geralmente há apenas um narrador principal e nenhum personagem do elenco deve ser inventado. Autores citados só viram voz se habilitado.
         - Não retorne markdown, explicações, apenas o JSON estruturado abaixo.
 
@@ -4395,6 +4437,17 @@ export async function performMapReduceCharacterAnalysis(
       throw new Error('Chave OPENAI_API_KEY ausente');
     }
 
+    const deterministicSpeakers = extractDialogueSpeakerCandidates(chunk.text);
+    for (const deterministic of deterministicSpeakers) {
+      if (!candidates.some(candidate => candidate.candidateName.toLocaleLowerCase('pt-BR') === deterministic.candidateName.toLocaleLowerCase('pt-BR'))) {
+        candidates.push(deterministic);
+      }
+    }
+    candidates = candidates.map(candidate => ({
+      ...candidate,
+      aliases: Array.isArray(candidate.aliases) ? candidate.aliases.filter((alias: string) => !isGenericCharacterAlias(alias)) : [],
+    }));
+
     // Apply strict technical mode rules during map step
     if (isTechnicalMode) {
       candidates = candidates.filter((c) => {
@@ -4440,6 +4493,7 @@ export async function performMapReduceCharacterAnalysis(
 
   // Hydrate from existing characters to guarantee stability and prevent overriding human edits
   for (const char of existingCharacters) {
+    char.aliases = Array.isArray(char.aliases) ? char.aliases.filter((alias: string) => !isGenericCharacterAlias(alias)) : [];
     consolidatedCharacters.push({ ...char });
     characterMapByName[char.canonicalName.toLowerCase()] = char;
     if (Array.isArray(char.aliases)) {

@@ -234,6 +234,8 @@ function AudioPanel({ detail, run, busy }: any) {
   const pending = detail.segments.filter((s: any) => s.status !== 'ready'); const ready = detail.segments.length - pending.length;
   const chars = pending.reduce((n: number, s: any) => n + (s.spokenText?.length || 0), 0);
   const [pricing, setPricing] = useState<any>(null);
+  const [confirmBatch, setConfirmBatch] = useState(false);
+  const [progress, setProgress] = useState({ completed: 0, total: 0, failed: 0 });
   useEffect(() => { api('/api/pricing').then(setPricing).catch(() => {}); }, []);
   const estimatedUsd = useMemo(() => pending.reduce((total: number, segment: any) => {
     const count = segment.spokenText?.length || 0;
@@ -253,8 +255,30 @@ function AudioPanel({ detail, run, busy }: any) {
     const seconds = count / 15;
     return total + textTokens / 1_000_000 * tier.input + (seconds * 25) / 1_000_000 * tier.output;
   }, 0), [pending, detail.characters, pricing]);
-  const generateAll = async () => { if (!confirm(`Gerar ${pending.length} trechos (${chars.toLocaleString('pt-BR')} caracteres)? O provedor poderá cobrar pelo uso.`)) return; await run('audio-all', async () => { for (const segment of pending) await post(`/api/projects/${detail.project.projectId}/segments/${segment.segmentId}/tts`); }, 'Áudios pendentes gerados.'); };
-  return <><div className="stats"><Stat label="Prontos" value={`${ready}/${detail.segments.length}`}/><Stat label="Pendentes" value={pending.length}/><Stat label="Caracteres a gerar" value={chars.toLocaleString('pt-BR')}/><Stat label="Estimativa" value={`US$ ${estimatedUsd.toFixed(2)}`}/></div><section className="panel"><div className="panel-title"><div><h2>Geração e revisão de áudio</h2><p>Antes de confirmar, veja o volume e o custo indicativo. Não existe voz do navegador nem sucesso simulado.</p></div><CircleDollarSign size={21}/></div><div className="cost-box"><div><span>ESTIMATIVA ANTES DE GERAR</span><strong>US$ {estimatedUsd.toFixed(2)} · {chars.toLocaleString('pt-BR')} caracteres</strong><small>Referência {pricing?.pricingAsOf || 'vigente'}; duração Gemini estimada em 15 caracteres/s. O faturamento do provedor prevalece.</small></div><Button busy={busy === 'audio-all'} disabled={!pending.length} onClick={generateAll}><AudioLines size={16}/>Gerar pendentes</Button></div></section><div className="audio-list">{detail.segments.map((s: any, i: number) => <div key={s.segmentId}><span>{String(i + 1).padStart(3,'0')}</span><div><strong>{s.spokenText?.slice(0, 90)}</strong><small>{s.status} · {s.durationMs ? `${Math.round(s.durationMs/1000)}s` : 'sem áudio'}</small></div>{s.audioPath ? <audio controls preload="none" src={s.audioPath}/> : <Button variant="quiet" busy={busy === s.segmentId} onClick={() => run(s.segmentId, () => post(`/api/projects/${detail.project.projectId}/segments/${s.segmentId}/tts`), 'Trecho gerado.')}><Play size={15}/>Gerar</Button>}</div>)}</div></>;
+  const generateAll = async () => {
+    setConfirmBatch(false);
+    setProgress({ completed: 0, total: pending.length, failed: 0 });
+    await run('audio-all', async () => {
+      let failed = 0;
+      for (let index = 0; index < pending.length; index++) {
+        const segment = pending[index];
+        const controller = new AbortController();
+        const timeout = window.setTimeout(() => controller.abort(), 60_000);
+        try {
+          await api(`/api/projects/${detail.project.projectId}/segments/${segment.segmentId}/tts`, { method: 'POST', signal: controller.signal });
+        } catch {
+          failed++;
+        } finally {
+          window.clearTimeout(timeout);
+          setProgress({ completed: index + 1, total: pending.length, failed });
+        }
+      }
+      if (failed) throw new Error(`${failed} de ${pending.length} trechos falharam. Os demais foram preservados; tente novamente somente os pendentes.`);
+      return { completed: pending.length };
+    }, 'Áudios pendentes gerados.');
+  };
+  const running = busy === 'audio-all';
+  return <><div className="stats"><Stat label="Prontos" value={`${ready}/${detail.segments.length}`}/><Stat label="Pendentes" value={pending.length}/><Stat label="Caracteres a gerar" value={chars.toLocaleString('pt-BR')}/><Stat label="Estimativa" value={`US$ ${estimatedUsd.toFixed(2)}`}/></div><section className="panel"><div className="panel-title"><div><h2>Geração e revisão de áudio</h2><p>Antes de confirmar, veja o volume e o custo indicativo. Não existe voz do navegador nem sucesso simulado.</p></div><CircleDollarSign size={21}/></div><div className="cost-box"><div><span>ESTIMATIVA ANTES DE GERAR</span><strong>US$ {estimatedUsd.toFixed(2)} · {chars.toLocaleString('pt-BR')} caracteres</strong><small>Referência {pricing?.pricingAsOf || 'vigente'}; duração Gemini estimada em 15 caracteres/s. O faturamento do provedor prevalece.</small></div>{confirmBatch ? <div className="panel-actions"><Button variant="quiet" disabled={running} onClick={() => setConfirmBatch(false)}>Cancelar</Button><Button busy={running} onClick={generateAll}>Confirmar {pending.length} trechos</Button></div> : <Button busy={running} disabled={!pending.length} onClick={() => setConfirmBatch(true)}><AudioLines size={16}/>Gerar pendentes</Button>}</div>{(running || progress.total > 0) && <div className="readiness"><span>{running ? <LoaderCircle className="spin"/> : <Check/>}</span><div><strong>{running ? `Gerando ${Math.min(progress.completed + 1, progress.total)} de ${progress.total}` : `${progress.completed} de ${progress.total} processados`}</strong><p>{progress.failed ? `${progress.failed} falharam; os concluídos foram preservados.` : 'Acompanhe o lote sem bloquear a interface.'}</p></div></div>}</section><div className="audio-list">{detail.segments.map((s: any, i: number) => <div key={s.segmentId}><span>{String(i + 1).padStart(3,'0')}</span><div><strong>{s.spokenText?.slice(0, 90)}</strong><small>{s.status} · {s.durationMs ? `${Math.round(s.durationMs/1000)}s` : 'sem áudio'}</small></div>{s.audioPath ? <audio controls preload="none" src={s.audioPath}/> : <Button variant="quiet" busy={busy === s.segmentId} disabled={running} onClick={() => run(s.segmentId, () => post(`/api/projects/${detail.project.projectId}/segments/${s.segmentId}/tts`), 'Trecho gerado.')}><Play size={15}/>Gerar</Button>}</div>)}</div></>;
 }
 
 function ExportPanel({ detail, run, busy }: any) {

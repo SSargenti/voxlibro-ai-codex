@@ -32,11 +32,23 @@ import {
   calculateHash,
   subdivideJobItem,
   detectLanguageLocally,
+  extractDialogueSpeakerCandidates,
+  isGenericCharacterAlias,
   type OcrState,
   type OcrBatch
 } from './server.ts';
 
 describe('Regressões da auditoria funcional', () => {
+  it('preserva personagens nomeados que pronunciam falas isoladas', () => {
+    const text = '— Não abra a porta — avisou Clara com voz firme. Uma menina chamada Clara apareceu na escada.';
+    expect(extractDialogueSpeakerCandidates(text).map(candidate => candidate.candidateName)).toContain('Clara');
+  });
+
+  it('remove pronomes e descrições genéricas da lista de aliases', () => {
+    expect(isGenericCharacterAlias('ela')).toBe(true);
+    expect(isGenericCharacterAlias('uma menina')).toBe(true);
+    expect(isGenericCharacterAlias('Dona Clara')).toBe(false);
+  });
   it('detecta português localmente quando a IA ainda não está configurada', () => {
     const result = detectLanguageLocally('Na pequena cidade, Helena chegou à antiga casa durante uma tempestade. Ela abriu o diário e perguntou se havia alguém ali.');
     expect(result.languageCode).toBe('pt-BR');
