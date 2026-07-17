@@ -31,6 +31,8 @@ import {
   saveJobs,
   calculateHash,
   subdivideJobItem,
+  validateTranslatedChunk,
+  isLikelyUntranslatedCopy,
   detectLanguageLocally,
   extractDialogueSpeakerCandidates,
   isGenericCharacterAlias,
@@ -80,6 +82,12 @@ describe('Regressões da auditoria funcional', () => {
   it('detecta inglês localmente sem confundir com português', () => {
     const result = detectLanguageLocally('The old house was silent, but she opened the door and walked into the room with her brother.');
     expect(result.languageCode).toBe('en');
+  });
+
+  it('rejeita como falso sucesso uma tradução idêntica ao original em inglês', () => {
+    const original = 'The Last Light of Aurora Station. A short mystery novella created to test AI audiobook applications.';
+    expect(isLikelyUntranslatedCopy(original, original)).toBe(true);
+    expect(validateTranslatedChunk(original, original).valid).toBe(false);
   });
 
   it('mantém amostras insuficientes como indeterminadas', () => {
@@ -878,6 +886,38 @@ describe('VoxLibro C06 - Jobs Resumíveis e Chunking', () => {
     const job2 = startProjectJob(projectId, 'translation', { style: 'literário' });
     expect(job2.items[0].status).toBe('completed');
     expect(job2.items[0].result?.translatedText).toBe('Texto curto traduzido.');
+  });
+
+  it('não deve reutilizar cache de tradução quando a saída é cópia do original em inglês', () => {
+    const projectId = 'proj_c06_invalid_translation_cache';
+    const projDir = path.join(tempDir, projectId);
+    fs.mkdirSync(path.join(projDir, 'normalized'), { recursive: true });
+
+    const originalText = 'The Last Light of Aurora Station. A short mystery novella created to test AI audiobook applications.';
+    const projectsFile = path.join(tempDir, 'projects.json');
+    const projects = fs.existsSync(projectsFile) ? JSON.parse(fs.readFileSync(projectsFile, 'utf8')) : [];
+    projects.push({
+      projectId,
+      name: 'Invalid Cache Project',
+      status: 'translating',
+      updatedAt: new Date().toISOString(),
+    });
+    fs.writeFileSync(projectsFile, JSON.stringify(projects, null, 2));
+
+    fs.writeFileSync(path.join(projDir, 'normalized/chapters.json'), JSON.stringify([
+      { chapterId: 'ch1', title: 'Chapter 1', originalText, status: 'pending' }
+    ], null, 2));
+
+    const staleJob = startProjectJob(projectId, 'translation', { style: 'literário' });
+    staleJob.items[0].status = 'completed';
+    staleJob.items[0].result = { translatedText: originalText };
+    staleJob.items[0].outputHash = calculateHash(JSON.stringify(staleJob.items[0].result));
+    staleJob.status = 'completed';
+    saveJobs(getJobs().map(j => j.jobId === staleJob.jobId ? staleJob : j));
+
+    const freshJob = startProjectJob(projectId, 'translation', { style: 'literário' });
+    expect(freshJob.items[0].status).toBe('queued');
+    expect(freshJob.items[0].result).toBeUndefined();
   });
 
   it('deve subdividir um JobItem que falhou (auto-subdivisão por tokens)', () => {
