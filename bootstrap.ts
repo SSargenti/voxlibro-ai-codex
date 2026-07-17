@@ -1,6 +1,7 @@
 import { registerProjectBackupRoutes } from './src/projectBackup';
 import { configureOpenAiModelRouting } from './src/openAiModelRouting';
 import { registerProjectCostEstimateRoutes } from './src/projectCostEstimate';
+import { registerTranslatedBookEligibilityGuard } from './src/translatedBookEligibility';
 import { registerTranslatedBookRoutes } from './src/translatedBookExport';
 import { registerTranslationMemoryRoutes } from './src/translationMemory';
 
@@ -25,6 +26,7 @@ async function bootstrap() {
   registerTranslationMemoryRoutes(server.app, storageProvider, {
     startProjectJob: server.startProjectJob,
   });
+  registerTranslatedBookEligibilityGuard(server.app, storageProvider);
   registerTranslatedBookRoutes(server.app, storageProvider);
 
   await server.startServer();
