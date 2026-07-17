@@ -92,9 +92,11 @@ describe('pipeline do livro traduzido', () => {
     expect(entries).toContain('word/document.xml');
     expect(entries).toContain('word/styles.xml');
     const documentXml = zip.readAsText('word/document.xml');
+    const stylesXml = zip.readAsText('word/styles.xml');
     expect(documentXml).toContain('The Last Station');
     expect(documentXml).toContain('A estação estava silenciosa.');
-    expect(documentXml).toContain('w:styleId="Heading1"');
+    expect(documentXml).toContain('w:pStyle w:val="Heading1"');
+    expect(stylesXml).toContain('w:styleId="Heading1"');
   });
 
   it('bloqueia arquivos finais quando falta tradução de um capítulo', () => {
