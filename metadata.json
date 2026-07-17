@@ -1,0 +1,6 @@
+{
+  "name": "VoxLibro AI",
+  "description": "Estúdio editorial de produção de audiolivros, audionovelas e narrações técnicas orientado por IA. Permite processamento, tradução para português do Brasil, identificação de personagens, direção de vozes e exportação.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["SERVER_SIDE_OPENAI_RESPONSES", "GOOGLE_CLOUD_TTS", "GEMINI_TTS"]
+}

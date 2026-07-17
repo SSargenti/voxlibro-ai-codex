@@ -1,0 +1,14 @@
+node_modules/
+build/
+dist/
+server-dist/
+projects/
+cache/
+uploads/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+.credentials/
+credentials.json
