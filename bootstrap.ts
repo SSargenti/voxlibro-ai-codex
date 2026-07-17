@@ -1,4 +1,5 @@
 import { registerProjectBackupRoutes } from './src/projectBackup';
+import { registerCharacterAnalysisJobRoutes } from './src/characterAnalysisJob';
 import { configureOpenAiModelRouting } from './src/openAiModelRouting';
 import { registerProjectCostEstimateRoutes } from './src/projectCostEstimate';
 import { registerEpubExportRoutes } from './src/epubExport';
@@ -26,6 +27,9 @@ async function bootstrap() {
   registerProjectCostEstimateRoutes(server.app, storageProvider);
   registerTranslationMemoryRoutes(server.app, storageProvider, {
     startProjectJob: server.startProjectJob,
+  });
+  registerCharacterAnalysisJobRoutes(server.app, storageProvider, {
+    performMapReduceCharacterAnalysis: server.performMapReduceCharacterAnalysis,
   });
   registerTranslatedBookEligibilityGuard(server.app, storageProvider);
   registerEpubExportRoutes(server.app, storageProvider);
