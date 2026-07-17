@@ -1,5 +1,6 @@
 import { registerProjectBackupRoutes } from './src/projectBackup';
 import { registerCharacterAnalysisJobRoutes } from './src/characterAnalysisJob';
+import { cleanupStaleCharacterAnalysisStages } from './src/characterAnalysisStageCleanup';
 import { configureOpenAiModelRouting } from './src/openAiModelRouting';
 import { registerProjectCostEstimateRoutes } from './src/projectCostEstimate';
 import { registerEpubExportRoutes } from './src/epubExport';
@@ -23,6 +24,7 @@ async function bootstrap() {
     projectsDbFile: server.PROJECTS_DB_FILE,
   });
 
+  cleanupStaleCharacterAnalysisStages(storageProvider());
   registerProjectBackupRoutes(server.app, storageProvider);
   registerProjectCostEstimateRoutes(server.app, storageProvider);
   registerTranslationMemoryRoutes(server.app, storageProvider, {
