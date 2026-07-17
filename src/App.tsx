@@ -136,9 +136,24 @@ export default function App() {
   };
   const run = async (name: string, fn: () => Promise<any>, success: string) => {
     setBusy(name); setNotice(null);
-    try { const result = await fn(); await loadDetail(); await loadProjects(); setNotice({ kind: 'ok', text: success }); return result; }
-    catch (e: any) { setNotice({ kind: 'error', text: e.message }); return null; }
-    finally { setBusy(''); }
+    let result: any = null;
+    let operationError: any = null;
+    try {
+      result = await fn();
+      setNotice({ kind: 'ok', text: success });
+    } catch (e: any) {
+      operationError = e;
+      setNotice({ kind: 'error', text: e.message });
+    } finally {
+      try {
+        await loadDetail();
+        await loadProjects();
+      } catch (refreshError: any) {
+        if (!operationError) setNotice({ kind: 'error', text: refreshError.message });
+      }
+      setBusy('');
+    }
+    return operationError ? null : result;
   };
   const showProjects = () => { setView('projects'); void loadProjects(); };
 
@@ -191,7 +206,7 @@ function Workspace({ detail, step, changeStep, run, busy, refresh, goBack, setDe
     {step === 'bible' && <BiblePanel characters={characters} run={run} project={project} busy={busy}/>} 
     {step === 'casting' && <CastingPanel detail={detail} setDetail={setDetail} run={run} busy={busy}/>} 
     {step === 'script' && <ScriptPanel detail={detail} setDetail={setDetail} run={run} busy={busy}/>} 
-    {step === 'audio' && <AudioPanel detail={detail} run={run} busy={busy}/>} 
+    {step === 'audio' && <AudioPanel detail={detail} setDetail={setDetail} run={run} busy={busy}/>} 
     {step === 'export' && <ExportPanel detail={detail} run={run} busy={busy}/>} 
   </main></div>;
 }
@@ -239,12 +254,14 @@ function ScriptPanel({ detail, setDetail, run, busy }: any) {
   return <><section className="panel"><div className="panel-title"><div><h2>Roteiro de locução</h2><p>Cada unidade mantém o texto-fonte, o locutor e a direção. Editar invalida apenas seu áudio.</p></div><WandSparkles size={21}/></div><div className="panel-actions"><Button busy={busy === 'script'} disabled={!castingReady} onClick={() => run('script', () => post(`/api/projects/${detail.project.projectId}/script`), 'Roteiro criado e validado contra a obra.')}><WandSparkles size={16}/>{!castingReady ? 'Conclua o elenco primeiro' : detail.segments.length ? 'Refazer roteiro' : 'Criar roteiro'}</Button></div></section>{detail.segments.length ? <div className="segments">{detail.segments.slice(0, 120).map((s: any, i: number) => <article className="segment" key={s.segmentId}><span className="segment-number">{i + 1}</span><div className="segment-main"><div className="segment-meta"><b>{detail.characters.find((c: any) => c.characterId === s.speakerId)?.canonicalName || 'Narrador'}</b><span>{s.type}</span><i className={s.status}>{s.status}</i></div><textarea value={s.spokenText || ''} onChange={e => edit(s.segmentId, e.target.value)}/><button onClick={() => saveSegment(s)}><Save size={14}/>Salvar trecho</button></div></article>)}</div> : <Empty icon={FileText} title="Roteiro ainda não gerado" text="Salve o elenco e gere unidades de locução revisáveis."/>}</>;
 }
 
-function AudioPanel({ detail, run, busy }: any) {
-  const pending = detail.segments.filter((s: any) => s.status !== 'ready'); const ready = detail.segments.length - pending.length;
+function AudioPanel({ detail, setDetail, run, busy }: any) {
+  const pending = detail.segments.filter((s: any) => s.status !== 'ready');
+  const failedSegments = detail.segments.filter((s: any) => s.status === 'failed');
+  const ready = detail.segments.length - pending.length;
   const chars = pending.reduce((n: number, s: any) => n + (s.spokenText?.length || 0), 0);
   const [pricing, setPricing] = useState<any>(null);
   const [confirmBatch, setConfirmBatch] = useState(false);
-  const [progress, setProgress] = useState({ completed: 0, total: 0, failed: 0 });
+  const [progress, setProgress] = useState<{ completed: number; total: number; failures: { segmentId: string; order: number; message: string }[] }>({ completed: 0, total: 0, failures: [] });
   useEffect(() => { api('/api/pricing').then(setPricing).catch(() => {}); }, []);
   const estimatedUsd = useMemo(() => pending.reduce((total: number, segment: any) => {
     const count = segment.spokenText?.length || 0;
@@ -264,30 +281,62 @@ function AudioPanel({ detail, run, busy }: any) {
     const seconds = count / 15;
     return total + textTokens / 1_000_000 * tier.input + (seconds * 25) / 1_000_000 * tier.output;
   }, 0), [pending, detail.characters, pricing]);
+
+  const applySegmentResult = (segment: any, project?: Project) => {
+    setDetail((current: Detail) => ({
+      ...current,
+      project: project || current.project,
+      segments: current.segments.map(item => item.segmentId === segment.segmentId ? { ...item, ...segment } : item),
+    }));
+  };
+
   const generateAll = async () => {
+    const batch = [...pending];
     setConfirmBatch(false);
-    setProgress({ completed: 0, total: pending.length, failed: 0 });
+    setProgress({ completed: 0, total: batch.length, failures: [] });
     await run('audio-all', async () => {
-      let failed = 0;
-      for (let index = 0; index < pending.length; index++) {
-        const segment = pending[index];
-        const controller = new AbortController();
-        const timeout = window.setTimeout(() => controller.abort(), 60_000);
+      const failures: { segmentId: string; order: number; message: string }[] = [];
+      for (let index = 0; index < batch.length; index++) {
+        const segment = batch[index];
         try {
-          await api(`/api/projects/${detail.project.projectId}/segments/${segment.segmentId}/tts`, { method: 'POST', signal: controller.signal });
-        } catch {
-          failed++;
+          const result = await api(`/api/projects/${detail.project.projectId}/segments/${segment.segmentId}/tts`, { method: 'POST' });
+          if (result?.segment) applySegmentResult(result.segment, result.project);
+        } catch (e: any) {
+          const failure = { segmentId: segment.segmentId, order: index + 1, message: e.message || 'Falha desconhecida' };
+          failures.push(failure);
+          setDetail((current: Detail) => ({
+            ...current,
+            segments: current.segments.map(item => item.segmentId === segment.segmentId
+              ? { ...item, status: 'failed', lastError: { message: failure.message } }
+              : item),
+          }));
         } finally {
-          window.clearTimeout(timeout);
-          setProgress({ completed: index + 1, total: pending.length, failed });
+          setProgress({ completed: index + 1, total: batch.length, failures: [...failures] });
         }
       }
-      if (failed) throw new Error(`${failed} de ${pending.length} trechos falharam. Os demais foram preservados; tente novamente somente os pendentes.`);
-      return { completed: pending.length };
-    }, 'Áudios pendentes gerados.');
+      if (failures.length) {
+        const sample = failures.slice(0, 5).map(item => `#${item.order}: ${item.message}`).join(' · ');
+        throw new Error(`${failures.length} de ${batch.length} trechos falharam. ${sample}${failures.length > 5 ? ' · …' : ''}`);
+      }
+      return { completed: batch.length };
+    }, 'Áudios pendentes gerados e disponibilizados.');
   };
+
   const running = busy === 'audio-all';
-  return <><div className="stats"><Stat label="Prontos" value={`${ready}/${detail.segments.length}`}/><Stat label="Pendentes" value={pending.length}/><Stat label="Caracteres a gerar" value={chars.toLocaleString('pt-BR')}/><Stat label="Estimativa" value={`US$ ${estimatedUsd.toFixed(2)}`}/></div><section className="panel"><div className="panel-title"><div><h2>Geração e revisão de áudio</h2><p>Antes de confirmar, veja o volume e o custo indicativo. Não existe voz do navegador nem sucesso simulado.</p></div><CircleDollarSign size={21}/></div><div className="cost-box"><div><span>ESTIMATIVA ANTES DE GERAR</span><strong>US$ {estimatedUsd.toFixed(2)} · {chars.toLocaleString('pt-BR')} caracteres</strong><small>Referência {pricing?.pricingAsOf || 'vigente'}; duração Gemini estimada em 15 caracteres/s. O faturamento do provedor prevalece.</small></div>{confirmBatch ? <div className="panel-actions"><Button variant="quiet" disabled={running} onClick={() => setConfirmBatch(false)}>Cancelar</Button><Button busy={running} onClick={generateAll}>Confirmar {pending.length} trechos</Button></div> : <Button busy={running} disabled={!pending.length} onClick={() => setConfirmBatch(true)}><AudioLines size={16}/>Gerar pendentes</Button>}</div>{(running || progress.total > 0) && <div className="readiness"><span>{running ? <LoaderCircle className="spin"/> : <Check/>}</span><div><strong>{running ? `Gerando ${Math.min(progress.completed + 1, progress.total)} de ${progress.total}` : `${progress.completed} de ${progress.total} processados`}</strong><p>{progress.failed ? `${progress.failed} falharam; os concluídos foram preservados.` : 'Acompanhe o lote sem bloquear a interface.'}</p></div></div>}</section><ContextSoundPanel detail={detail} run={run} busy={busy}/><div className="audio-list">{detail.segments.map((s: any, i: number) => <div key={s.segmentId}><span>{String(i + 1).padStart(3,'0')}</span><div><strong>{s.spokenText?.slice(0, 90)}</strong><small>{s.status} · {s.durationMs ? `${Math.round(s.durationMs/1000)}s` : 'sem áudio'}</small></div>{s.contextualAudioPath || s.audioPath ? <audio controls preload="none" src={s.contextualAudioPath || s.audioPath}/> : <Button variant="quiet" busy={busy === s.segmentId} disabled={running} onClick={() => run(s.segmentId, () => post(`/api/projects/${detail.project.projectId}/segments/${s.segmentId}/tts`), 'Trecho gerado.')}><Play size={15}/>Gerar</Button>}</div>)}</div></>;
+  return <>
+    <div className="stats"><Stat label="Prontos" value={`${ready}/${detail.segments.length}`}/><Stat label="Pendentes" value={pending.length}/><Stat label="Falhas" value={failedSegments.length}/><Stat label="Estimativa" value={`US$ ${estimatedUsd.toFixed(2)}`}/></div>
+    <section className="panel">
+      <div className="panel-title"><div><h2>Geração e revisão de áudio</h2><p>Os áudios aparecem assim que cada trecho termina. Falhas permanecem identificadas para nova tentativa seletiva.</p></div><CircleDollarSign size={21}/></div>
+      <div className="cost-box"><div><span>ESTIMATIVA ANTES DE GERAR</span><strong>US$ {estimatedUsd.toFixed(2)} · {chars.toLocaleString('pt-BR')} caracteres</strong><small>Referência {pricing?.pricingAsOf || 'vigente'}; duração Gemini estimada em 15 caracteres/s. O faturamento do provedor prevalece.</small></div>{confirmBatch ? <div className="panel-actions"><Button variant="quiet" disabled={running} onClick={() => setConfirmBatch(false)}>Cancelar</Button><Button busy={running} onClick={generateAll}>Confirmar {pending.length} trechos</Button></div> : <Button busy={running} disabled={!pending.length} onClick={() => setConfirmBatch(true)}><AudioLines size={16}/>{failedSegments.length ? 'Gerar pendentes e tentar falhas' : 'Gerar pendentes'}</Button>}</div>
+      {(running || progress.total > 0) && <div className="readiness"><span>{running ? <LoaderCircle className="spin"/> : progress.failures.length ? <Gauge/> : <Check/>}</span><div><strong>{running ? `Gerando ${Math.min(progress.completed + 1, progress.total)} de ${progress.total}` : `${progress.completed} de ${progress.total} processados`}</strong><p>{progress.failures.length ? `${progress.failures.length} falharam; veja os trechos destacados abaixo.` : 'Os concluídos já estão disponíveis na lista.'}</p></div></div>}
+      {progress.failures.length > 0 && <div className="callout"><div><strong>Falhas deste lote</strong><span>{progress.failures.map(item => `#${item.order} — ${item.message}`).join(' | ')}</span></div></div>}
+    </section>
+    <ContextSoundPanel detail={detail} run={run} busy={busy}/>
+    <div className="audio-list">{detail.segments.map((s: any, i: number) => {
+      const errorMessage = s.lastError?.message || s.lastError?.error?.message || '';
+      return <div key={s.segmentId} className={s.status === 'failed' ? 'failed' : ''}><span>{String(i + 1).padStart(3,'0')}</span><div><strong>{s.spokenText?.slice(0, 90)}</strong><small>{s.status === 'failed' ? `FALHOU${errorMessage ? ` · ${errorMessage}` : ''}` : `${s.status} · ${s.durationMs ? `${Math.round(s.durationMs/1000)}s` : 'sem áudio'}`}</small></div>{s.contextualAudioPath || s.audioPath ? <audio controls preload="metadata" src={s.contextualAudioPath || s.audioPath}/> : <Button variant="quiet" busy={busy === s.segmentId} disabled={running} onClick={() => run(s.segmentId, async () => { const result = await post(`/api/projects/${detail.project.projectId}/segments/${s.segmentId}/tts`); if (result?.segment) applySegmentResult(result.segment, result.project); return result; }, s.status === 'failed' ? 'Trecho regenerado.' : 'Trecho gerado.')}><Play size={15}/>{s.status === 'failed' ? 'Tentar novamente' : 'Gerar'}</Button>}</div>;
+    })}</div>
+  </>;
 }
 
 function ContextSoundPanel({ detail, run, busy }: any) {
@@ -313,7 +362,7 @@ function SettingsView({ notify }: any) {
   const [status, setStatus] = useState<any>(null); const [keys, setKeys] = useState({ openai: '', gemini: '', freesound: '' }); const [busy, setBusy] = useState('');
   const load = () => api('/api/settings/credentials/status').then(setStatus).catch((e: any) => notify({ kind: 'error', text: e.message })); useEffect(() => { void load(); }, []);
   const save = async (provider: 'openai'|'gemini'|'freesound') => { setBusy(provider); try { await api(`/api/settings/credentials/${provider}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ apiKey: keys[provider], sessionOnly: true }) }); setKeys(k => ({ ...k, [provider]: '' })); await load(); notify({ kind: 'ok', text: 'Credencial salva somente na memória desta sessão.' }); } catch (e: any) { notify({ kind: 'error', text: e.message }); } finally { setBusy(''); } };
-  return <main className="page settings-page"><section className="hero compact"><div><span className="eyebrow">CONFIGURAÇÕES</span><h1>Provedores e <em>credenciais.</em></h1><p>Cada chave tem uma função única. Os campos nunca devolvem nem revelam o valor salvo.</p></div></section><div className="credential-stack"><Credential name="OpenAI" tag="TEXTO" description="Tradução, bíblia narrativa, continuidade e roteiro." configured={status?.openai?.configured} value={keys.openai} onChange={(v: string) => setKeys({...keys, openai:v})} onSave={() => save('openai')} busy={busy==='openai'} models="GPT-5.6 · esforço baixo, médio ou alto"/><Credential name="Gemini TTS" tag="VOZ EXPRESSIVA" description="Vozes interpretativas nos níveis Standard e Premium." configured={status?.gemini?.configured} value={keys.gemini} onChange={(v: string) => setKeys({...keys, gemini:v})} onSave={() => save('gemini')} busy={busy==='gemini'} models="Gemini 2.5 Flash TTS · Pro TTS"/><Credential name="Google Cloud TTS" tag="VOZ ECONÔMICA" description="OAuth2 por Service Account, configurada como GCP_CREDENTIALS no Render." configured={status?.gcp?.configured} serverManaged models="WaveNet · Neural2 · Service Account"/><Credential name="Freesound" tag="AMBIÊNCIA E EFEITOS" description="Busca sons contextuais com licença e atribuição preservadas." configured={status?.freesound?.configured} value={keys.freesound} onChange={(v:string)=>setKeys({...keys,freesound:v})} onSave={()=>save('freesound')} busy={busy==='freesound'} models="API v2 · prévias licenciadas"/></div><div className="security-note"><KeyRound size={20}/><div><strong>Separação rígida</strong><p>O VoxLibro não reutiliza uma chave em outro provedor e não recorre à voz do navegador. Falhas são exibidas de forma explícita.</p></div></div></main>;
+  return <main className="page settings-page"><section className="hero compact"><div><span className="eyebrow">CONFIGURAÇÕES</span><h1>Provedores e <em>credenciais.</em></h1><p>Cada chave tem uma função única. Os campos nunca devolvem nem revelam o valor salvo.</p></div></section><div className="credential-stack"><Credential name="OpenAI" tag="TEXTO" description="Tradução, bíblia narrativa, continuidade e roteiro." configured={status?.openai?.configured} value={keys.openai} onChange={(v: string) => setKeys({...keys, openai:v})} onSave={() => save('openai')} busy={busy==='openai'} models="GPT-5.6 · esforço baixo, médio ou alto"/><Credential name="Gemini TTS" tag="VOZ EXPRESSIVA" description="Vozes interpretativas nos níveis Standard e Premium." configured={status?.gemini?.configured} value={keys.gemini} onChange={(v: string) => setKeys({...keys, gemini:v})} onSave={() => save('gemini')} busy={busy==='gemini'} models="Gemini 2.5 Flash TTS · Pro TTS"/><Credential name="Google Cloud TTS" tag="VOZ ECONÔMICA" description="OAuth2 por Service Account, configurada como GCP_CREDENTIALS no Render." configured={status?.gcp?.configured} serverManaged models="WaveNet · Neural2 · Service Account"/><Credential name="Freesound" tag="AMBIÊNCIA E EFEITOS" description="Busca sons contextuais com licença e atribuição preservada." configured={status?.freesound?.configured} value={keys.freesound} onChange={(v:string)=>setKeys({...keys,freesound:v})} onSave={()=>save('freesound')} busy={busy==='freesound'} models="API v2 · prévias licenciadas"/></div><div className="security-note"><KeyRound size={20}/><div><strong>Separação rígida</strong><p>O VoxLibro não reutiliza uma chave em outro provedor e não recorre à voz do navegador. Falhas são exibidas de forma explícita.</p></div></div></main>;
 }
 
 function Credential({ name, tag, description, configured, value, onChange, onSave, busy, models, serverManaged }: any) { return <section className="credential"><div className="provider-icon"><KeyRound/></div><div className="provider-copy"><span className="eyebrow">{tag}</span><h2>{name}</h2><p>{description}</p><small>{models}</small></div><div className="key-form"><span className={configured ? 'configured' : ''}>{configured ? '● Configurada' : '○ Não configurada'}</span>{serverManaged?<div className="server-managed">Gerenciada com segurança no ambiente do servidor</div>:<div><input type="password" autoComplete="off" value={value} onChange={e => onChange(e.target.value)} placeholder="Cole uma nova chave"/><Button busy={busy} disabled={!value} onClick={onSave}>Salvar na sessão</Button></div>}</div></section>; }
