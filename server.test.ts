@@ -31,9 +31,27 @@ import {
   saveJobs,
   calculateHash,
   subdivideJobItem,
+  detectLanguageLocally,
   type OcrState,
   type OcrBatch
 } from './server.ts';
+
+describe('Regressões da auditoria funcional', () => {
+  it('detecta português localmente quando a IA ainda não está configurada', () => {
+    const result = detectLanguageLocally('Na pequena cidade, Helena chegou à antiga casa durante uma tempestade. Ela abriu o diário e perguntou se havia alguém ali.');
+    expect(result.languageCode).toBe('pt-BR');
+    expect(result.confidence).toBeGreaterThanOrEqual(0.65);
+  });
+
+  it('detecta inglês localmente sem confundir com português', () => {
+    const result = detectLanguageLocally('The old house was silent, but she opened the door and walked into the room with her brother.');
+    expect(result.languageCode).toBe('en');
+  });
+
+  it('mantém amostras insuficientes como indeterminadas', () => {
+    expect(detectLanguageLocally('Aurora').languageCode).toBe('und');
+  });
+});
 
 // Silence logging in tests
 beforeAll(() => {

@@ -65,6 +65,11 @@ function statusLabel(status: string) {
   return labels[status] || status?.replaceAll('_', ' ') || 'Novo';
 }
 
+function isPortugueseLanguage(language?: string) {
+  const normalized = (language || '').toLowerCase().trim();
+  return normalized.startsWith('pt') || normalized.includes('portug') || normalized.includes('brazil');
+}
+
 function Button({ children, variant = 'primary', busy, ...props }: any) {
   return <button className={`button ${variant}`} disabled={busy || props.disabled} {...props}>
     {busy ? <LoaderCircle size={16} className="spin" /> : null}{children}
@@ -94,12 +99,33 @@ export default function App() {
     setDetail(data);
     localStorage.setItem('voxlibro.project', id);
   };
-  useEffect(() => { loadProjects(); }, []);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = (await api('/api/projects')).projects || [];
+        if (cancelled) return;
+        setProjects(list);
+        const savedId = localStorage.getItem('voxlibro.project');
+        if (!savedId || !list.some((project: Project) => project.projectId === savedId)) return;
+        const data = await api(`/api/projects/${savedId}`);
+        if (cancelled) return;
+        setDetail(data);
+        const savedStep = localStorage.getItem(`voxlibro.step.${savedId}`) as StepId | null;
+        setStep(savedStep && steps.some(item => item.id === savedStep) ? savedStep : 'source');
+        setView('workspace');
+      } catch (e: any) {
+        if (!cancelled) setNotice({ kind: 'error', text: e.message });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   const openProject = async (id: string) => {
     setBusy('open');
     try {
       const data = await api(`/api/projects/${id}`); setDetail(data); setView('workspace');
+      localStorage.setItem('voxlibro.project', id);
       const saved = localStorage.getItem(`voxlibro.step.${id}`) as StepId | null;
       setStep(saved && steps.some(s => s.id === saved) ? saved : 'source');
     } catch (e: any) { setNotice({ kind: 'error', text: e.message }); }
@@ -110,15 +136,16 @@ export default function App() {
   };
   const run = async (name: string, fn: () => Promise<any>, success: string) => {
     setBusy(name); setNotice(null);
-    try { await fn(); await loadDetail(); await loadProjects(); setNotice({ kind: 'ok', text: success }); }
-    catch (e: any) { setNotice({ kind: 'error', text: e.message }); }
+    try { const result = await fn(); await loadDetail(); await loadProjects(); setNotice({ kind: 'ok', text: success }); return result; }
+    catch (e: any) { setNotice({ kind: 'error', text: e.message }); return null; }
     finally { setBusy(''); }
   };
+  const showProjects = () => { setView('projects'); void loadProjects(); };
 
   return <div className="app-shell">
     <header className="topbar">
-      <button className="brand" onClick={() => setView('projects')}><span className="brand-mark"><AudioLines size={20}/></span><span>VOXLIBRO <b>AI</b></span></button>
-      <nav><button className={view === 'projects' ? 'active' : ''} onClick={() => setView('projects')}><Library size={17}/>Projetos</button><button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}><Settings size={17}/>Configurações</button></nav>
+      <button className="brand" onClick={showProjects}><span className="brand-mark"><AudioLines size={20}/></span><span>VOXLIBRO <b>AI</b></span></button>
+      <nav><button className={view === 'projects' ? 'active' : ''} onClick={showProjects}><Library size={17}/>Projetos</button><button className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}><Settings size={17}/>Configurações</button></nav>
       <div className="local-pill"><span/>Uso individual</div>
     </header>
 
@@ -128,7 +155,7 @@ export default function App() {
       if (!confirm('Excluir este projeto e os arquivos gerados?')) return;
       await api(`/api/projects/${id}`, { method: 'DELETE' }); await loadProjects();
     }}/>} 
-    {view === 'workspace' && detail && <Workspace detail={detail} step={step} changeStep={changeStep} run={run} busy={busy} refresh={loadDetail} goBack={() => setView('projects')} setDetail={setDetail}/>} 
+    {view === 'workspace' && detail && <Workspace detail={detail} step={step} changeStep={changeStep} run={run} busy={busy} refresh={loadDetail} goBack={showProjects} setDetail={setDetail}/>} 
     {view === 'settings' && <SettingsView notify={setNotice}/>} 
     {createOpen && <CreateProject close={() => setCreateOpen(false)} created={async id => { setCreateOpen(false); await loadProjects(); await openProject(id); }}/>} 
   </div>;
@@ -159,7 +186,7 @@ function CreateProject({ close, created }: any) {
 function Workspace({ detail, step, changeStep, run, busy, refresh, goBack, setDetail }: any) {
   const { project, chapters, characters, segments } = detail;
   return <div className="workspace"><aside className="workflow-nav"><button className="back" onClick={goBack}><ChevronLeft size={17}/>Projetos</button><div className="book-mini"><div><BookOpen size={20}/></div><span><strong>{project.name}</strong><small>{statusLabel(project.status)}</small></span></div><ol>{steps.map((item, index) => { const Icon = item.icon; return <li key={item.id}><button className={step === item.id ? 'active' : ''} onClick={() => changeStep(item.id)}><span>{index + 1}</span><Icon size={17}/>{item.label}</button></li>; })}</ol><div className="workflow-note"><Gauge size={18}/><span><strong>Estado preservado</strong><small>Você volta exatamente a esta etapa.</small></span></div></aside><main className="stage"><div className="stage-top"><div><span className="eyebrow">{statusLabel(project.status)}</span><h1>{steps.find(s => s.id === step)?.label}</h1></div><Button variant="quiet" onClick={refresh}><RefreshCw size={16}/>Atualizar</Button></div>
-    {step === 'source' && <SourcePanel detail={detail} run={run} busy={busy}/>} 
+    {step === 'source' && <SourcePanel detail={detail} run={run} busy={busy} changeStep={changeStep}/>} 
     {step === 'translation' && <TranslationPanel project={project} chapters={chapters} run={run} busy={busy}/>} 
     {step === 'bible' && <BiblePanel characters={characters} run={run} project={project} busy={busy}/>} 
     {step === 'casting' && <CastingPanel detail={detail} setDetail={setDetail} run={run} busy={busy}/>} 
@@ -169,9 +196,15 @@ function Workspace({ detail, step, changeStep, run, busy, refresh, goBack, setDe
   </main></div>;
 }
 
-function SourcePanel({ detail, run, busy }: any) {
+function SourcePanel({ detail, run, busy, changeStep }: any) {
   const p = detail.project; const [title, setTitle] = useState(p.name); const [mode, setMode] = useState(p.productionMode); const [lang, setLang] = useState(p.sourceLanguage || 'auto');
-  return <><div className="stats"><Stat label="Palavras" value={(p.wordCount || 0).toLocaleString('pt-BR')}/><Stat label="Capítulos" value={detail.chapters.length}/><Stat label="Modo sugerido" value={p.recommendedProductionMode || p.productionMode}/><Stat label="Idioma" value={p.sourceLanguage || 'auto'}/></div><section className="panel"><div className="panel-title"><div><h2>Confirmar leitura da obra</h2><p>A extração é preservada; as etapas seguintes usam esta configuração.</p></div><FileText size={21}/></div><div className="form-grid"><label>Título<input value={title} onChange={e => setTitle(e.target.value)}/></label><label>Formato<select value={mode} onChange={e => setMode(e.target.value)}><option value="audiodrama">Audionovela</option><option value="audiobook">Audiolivro</option><option value="technical">Técnico</option></select></label><label>Idioma de origem<input value={lang} onChange={e => setLang(e.target.value)} placeholder="auto, en, es, pt-BR"/></label></div><div className="panel-actions"><Button busy={busy === 'configure'} onClick={() => run('configure', () => post(`/api/projects/${p.projectId}/configure`, { userTitle: title, selectedProductionMode: mode, sourceLanguage: lang, translationEnabled: p.translationEnabled }), 'Configuração salva.')}><Save size={16}/>Salvar configuração</Button></div></section><ChapterList chapters={detail.chapters}/></>;
+  const configure = async () => {
+    const result = await run('configure', () => post(`/api/projects/${p.projectId}/configure`, { userTitle: title, selectedProductionMode: mode, sourceLanguage: lang, translationEnabled: p.translationEnabled }), 'Configuração salva.');
+    if (!result?.project) return;
+    const nextStep: StepId = isPortugueseLanguage(result.project.sourceLanguage) || result.project.translationEnabled === false ? 'bible' : 'translation';
+    changeStep(nextStep);
+  };
+  return <><div className="stats"><Stat label="Palavras" value={(p.wordCount || 0).toLocaleString('pt-BR')}/><Stat label="Capítulos" value={detail.chapters.length}/><Stat label="Modo sugerido" value={p.recommendedProductionMode || p.productionMode}/><Stat label="Idioma" value={p.sourceLanguage || 'auto'}/></div><section className="panel"><div className="panel-title"><div><h2>Confirmar leitura da obra</h2><p>A extração é preservada; as etapas seguintes usam esta configuração.</p></div><FileText size={21}/></div><div className="form-grid"><label>Título<input value={title} onChange={e => setTitle(e.target.value)}/></label><label>Formato<select value={mode} onChange={e => setMode(e.target.value)}><option value="audiodrama">Audionovela</option><option value="audiobook">Audiolivro</option><option value="technical">Técnico</option></select></label><label>Idioma de origem<input value={lang} onChange={e => setLang(e.target.value)} placeholder="auto, en, es, pt-BR"/></label></div><div className="panel-actions"><Button busy={busy === 'configure'} onClick={configure}><Save size={16}/>Salvar configuração</Button></div></section><ChapterList chapters={detail.chapters}/></>;
 }
 
 function TranslationPanel({ project, chapters, run, busy }: any) {
@@ -193,7 +226,8 @@ function CastingPanel({ detail, setDetail, run, busy }: any) {
 function ScriptPanel({ detail, setDetail, run, busy }: any) {
   const saveSegment = async (segment: any) => { await post(`/api/projects/${detail.project.projectId}/segments/${segment.segmentId}`, { spokenText: segment.spokenText, speakerId: segment.speakerId, direction: segment.direction }); await run('refresh-segment', async () => {}, 'Trecho salvo; o áudio anterior foi invalidado.'); };
   const edit = (id: string, value: string) => setDetail((d: Detail) => ({ ...d, segments: d.segments.map(s => s.segmentId === id ? { ...s, spokenText: value } : s) }));
-  return <><section className="panel"><div className="panel-title"><div><h2>Roteiro de locução</h2><p>Cada unidade mantém o texto-fonte, o locutor e a direção. Editar invalida apenas seu áudio.</p></div><WandSparkles size={21}/></div><div className="panel-actions"><Button busy={busy === 'script'} onClick={() => run('script', () => post(`/api/projects/${detail.project.projectId}/script`), 'Roteiro criado e validado contra a obra.')}><WandSparkles size={16}/>{detail.segments.length ? 'Refazer roteiro' : 'Criar roteiro'}</Button></div></section>{detail.segments.length ? <div className="segments">{detail.segments.slice(0, 120).map((s: any, i: number) => <article className="segment" key={s.segmentId}><span className="segment-number">{i + 1}</span><div className="segment-main"><div className="segment-meta"><b>{detail.characters.find((c: any) => c.characterId === s.speakerId)?.canonicalName || 'Narrador'}</b><span>{s.type}</span><i className={s.status}>{s.status}</i></div><textarea value={s.spokenText || ''} onChange={e => edit(s.segmentId, e.target.value)}/><button onClick={() => saveSegment(s)}><Save size={14}/>Salvar trecho</button></div></article>)}</div> : <Empty icon={FileText} title="Roteiro ainda não gerado" text="Salve o elenco e gere unidades de locução revisáveis."/>}</>;
+  const castingReady = detail.characters.length > 0 && detail.characters.every((character: any) => character.voiceAssignmentId || character.voiceAssignment?.voiceName);
+  return <><section className="panel"><div className="panel-title"><div><h2>Roteiro de locução</h2><p>Cada unidade mantém o texto-fonte, o locutor e a direção. Editar invalida apenas seu áudio.</p></div><WandSparkles size={21}/></div><div className="panel-actions"><Button busy={busy === 'script'} disabled={!castingReady} onClick={() => run('script', () => post(`/api/projects/${detail.project.projectId}/script`), 'Roteiro criado e validado contra a obra.')}><WandSparkles size={16}/>{!castingReady ? 'Conclua o elenco primeiro' : detail.segments.length ? 'Refazer roteiro' : 'Criar roteiro'}</Button></div></section>{detail.segments.length ? <div className="segments">{detail.segments.slice(0, 120).map((s: any, i: number) => <article className="segment" key={s.segmentId}><span className="segment-number">{i + 1}</span><div className="segment-main"><div className="segment-meta"><b>{detail.characters.find((c: any) => c.characterId === s.speakerId)?.canonicalName || 'Narrador'}</b><span>{s.type}</span><i className={s.status}>{s.status}</i></div><textarea value={s.spokenText || ''} onChange={e => edit(s.segmentId, e.target.value)}/><button onClick={() => saveSegment(s)}><Save size={14}/>Salvar trecho</button></div></article>)}</div> : <Empty icon={FileText} title="Roteiro ainda não gerado" text="Salve o elenco e gere unidades de locução revisáveis."/>}</>;
 }
 
 function AudioPanel({ detail, run, busy }: any) {
@@ -227,7 +261,7 @@ function ExportPanel({ detail, run, busy }: any) {
   const ready = detail.segments.filter((s: any) => s.status === 'ready').length; const complete = detail.segments.length > 0 && ready === detail.segments.length;
   const [exports, setExports] = useState<any[]>([]);
   const loadExports = () => api(`/api/projects/${detail.project.projectId}/exports`).then(d => setExports((d.jobs || []).filter((j: any) => j.status === 'completed').reverse())).catch(() => {});
-  useEffect(loadExports, [detail.project.projectId]);
+  useEffect(() => { void loadExports(); }, [detail.project.projectId]);
   const exportIt = async (format: string) => { await run(`export-${format}`, () => post(`/api/projects/${detail.project.projectId}/export`, { format }), 'Exportação preparada. Use o botão de download.'); await loadExports(); };
   return <><section className="panel"><div className="panel-title"><div><h2>Pacote final</h2><p>O servidor valida cobertura, arquivos, duração e checksums antes de liberar a produção.</p></div><FileAudio size={21}/></div><div className={`readiness ${complete ? 'complete' : ''}`}><span>{complete ? <Check/> : <Gauge/>}</span><div><strong>{complete ? 'Produção pronta para exportar' : 'Produção ainda incompleta'}</strong><p>{ready} de {detail.segments.length} trechos possuem áudio validado.</p></div></div><div className="panel-actions"><Button variant="quiet" busy={busy === 'audit'} disabled={!detail.segments.length} onClick={() => run('audit', () => post(`/api/projects/${detail.project.projectId}/audit`), 'Auditoria editorial salva nos logs do projeto.')}><Sparkles size={16}/>Auditoria difícil sob demanda</Button></div><div className="export-grid"><button disabled={!complete || !!busy} onClick={() => exportIt('mp3_single')}><FileAudio/><strong>MP3 único</strong><span>Livro contínuo</span></button><button disabled={!complete || !!busy} onClick={() => exportIt('mp3_chapters')}><BookOpen/><strong>Por capítulos</strong><span>Faixas separadas</span></button><button disabled={!complete || !!busy} onClick={() => exportIt('zip_assets')}><Download/><strong>Pacote ZIP</strong><span>Áudio, roteiro e manifesto</span></button></div>{exports.map((job: any) => <a className="download-link" key={job.exportJobId} href={job.downloadUrl}><Download size={17}/>Baixar {job.format.replaceAll('_', ' ')}</a>)}</section></>;
 }
@@ -237,9 +271,9 @@ function Stat({ label, value }: any) { return <div className="stat"><span>{label
 
 function SettingsView({ notify }: any) {
   const [status, setStatus] = useState<any>(null); const [keys, setKeys] = useState({ openai: '', gemini: '', gcp: '' }); const [busy, setBusy] = useState('');
-  const load = () => api('/api/settings/credentials/status').then(setStatus).catch((e: any) => notify({ kind: 'error', text: e.message })); useEffect(load, []);
+  const load = () => api('/api/settings/credentials/status').then(setStatus).catch((e: any) => notify({ kind: 'error', text: e.message })); useEffect(() => { void load(); }, []);
   const save = async (provider: 'openai'|'gemini'|'gcp') => { setBusy(provider); try { const url = provider === 'gcp' ? 'google-cloud-tts' : provider; const body = provider === 'gcp' ? { method: 'apiKey', apiKey: keys.gcp, sessionOnly: true } : { apiKey: keys[provider], sessionOnly: true }; await api(`/api/settings/credentials/${url}`, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) }); setKeys(k => ({ ...k, [provider]: '' })); await load(); notify({ kind: 'ok', text: 'Credencial salva somente na memória desta sessão.' }); } catch (e: any) { notify({ kind: 'error', text: e.message }); } finally { setBusy(''); } };
-  return <main className="page settings-page"><section className="hero compact"><div><span className="eyebrow">CONFIGURAÇÕES</span><h1>Provedores e <em>credenciais.</em></h1><p>Cada chave tem uma função única. Os campos nunca devolvem nem revelam o valor salvo.</p></div></section><div className="credential-stack"><Credential name="OpenAI" tag="TEXTO" description="Tradução, bíblia narrativa, continuidade e roteiro." configured={status?.openai?.configured} value={keys.openai} onChange={(v: string) => setKeys({...keys, openai:v})} onSave={() => save('openai')} busy={busy==='openai'} models="Luna · Terra · Sol"/><Credential name="Gemini TTS" tag="VOZ EXPRESSIVA" description="Vozes interpretativas nos níveis Standard e Premium." configured={status?.gemini?.configured} value={keys.gemini} onChange={(v: string) => setKeys({...keys, gemini:v})} onSave={() => save('gemini')} busy={busy==='gemini'} models="Gemini 2.5 Flash TTS · Pro TTS"/><Credential name="Google Cloud TTS" tag="VOZ ECONÔMICA" description="WaveNet e Neural2 em português do Brasil." configured={status?.gcp?.configured} value={keys.gcp} onChange={(v: string) => setKeys({...keys, gcp:v})} onSave={() => save('gcp')} busy={busy==='gcp'} models="WaveNet · Neural2"/></div><div className="security-note"><KeyRound size={20}/><div><strong>Separação rígida</strong><p>O VoxLibro não reutiliza uma chave em outro provedor e não recorre à voz do navegador. Falhas são exibidas de forma explícita.</p></div></div></main>;
+  return <main className="page settings-page"><section className="hero compact"><div><span className="eyebrow">CONFIGURAÇÕES</span><h1>Provedores e <em>credenciais.</em></h1><p>Cada chave tem uma função única. Os campos nunca devolvem nem revelam o valor salvo.</p></div></section><div className="credential-stack"><Credential name="OpenAI" tag="TEXTO" description="Tradução, bíblia narrativa, continuidade e roteiro." configured={status?.openai?.configured} value={keys.openai} onChange={(v: string) => setKeys({...keys, openai:v})} onSave={() => save('openai')} busy={busy==='openai'} models="GPT-5.6 · esforço baixo, médio ou alto"/><Credential name="Gemini TTS" tag="VOZ EXPRESSIVA" description="Vozes interpretativas nos níveis Standard e Premium." configured={status?.gemini?.configured} value={keys.gemini} onChange={(v: string) => setKeys({...keys, gemini:v})} onSave={() => save('gemini')} busy={busy==='gemini'} models="Gemini 2.5 Flash TTS · Pro TTS"/><Credential name="Google Cloud TTS" tag="VOZ ECONÔMICA" description="WaveNet e Neural2 em português do Brasil." configured={status?.gcp?.configured} value={keys.gcp} onChange={(v: string) => setKeys({...keys, gcp:v})} onSave={() => save('gcp')} busy={busy==='gcp'} models="WaveNet · Neural2"/></div><div className="security-note"><KeyRound size={20}/><div><strong>Separação rígida</strong><p>O VoxLibro não reutiliza uma chave em outro provedor e não recorre à voz do navegador. Falhas são exibidas de forma explícita.</p></div></div></main>;
 }
 
 function Credential({ name, tag, description, configured, value, onChange, onSave, busy, models }: any) { return <section className="credential"><div className="provider-icon"><KeyRound/></div><div className="provider-copy"><span className="eyebrow">{tag}</span><h2>{name}</h2><p>{description}</p><small>{models}</small></div><div className="key-form"><span className={configured ? 'configured' : ''}>{configured ? '● Configurada' : '○ Não configurada'}</span><div><input type="password" autoComplete="off" value={value} onChange={e => onChange(e.target.value)} placeholder="Cole uma nova chave"/><Button busy={busy} disabled={!value} onClick={onSave}>Salvar na sessão</Button></div></div></section>; }

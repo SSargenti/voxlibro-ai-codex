@@ -1463,11 +1463,7 @@ const languageDetectionResponseSchema = {
 export async function detectLanguageWithGemini(text: string, projectId: string): Promise<{ languageCode: string; confidence: number; evidence: string }> {
   const hasApiKey = hasTextAi();
   if (!hasApiKey) {
-    return {
-      languageCode: 'und',
-      confidence: 0,
-      evidence: 'IA de texto indisponível (OPENAI_API_KEY ausente)'
-    };
+    return detectLanguageLocally(text);
   }
 
   const samples = getSamples(text);
@@ -1527,6 +1523,28 @@ Retorne estritamente um objeto JSON com o seguinte formato:
       evidence: `Error during detection: ${err.message || String(err)}`
     };
   }
+}
+
+export function detectLanguageLocally(text: string): { languageCode: string; confidence: number; evidence: string } {
+  const normalized = ` ${text.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z\s]/g, ' ')} `;
+  const tokens = normalized.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 3) return { languageCode: 'und', confidence: 0, evidence: 'Amostra insuficiente para detecção local' };
+  const dictionaries: Record<string, Set<string>> = {
+    'pt-BR': new Set(['a','ao','aos','as','com','como','da','das','de','do','dos','e','ela','ele','em','entre','era','esta','estava','foi','mais','mas','na','nas','no','nos','nao','o','os','ou','para','pela','pelo','por','que','se','sem','sua','um','uma','voce']),
+    en: new Set(['a','and','as','at','but','by','for','from','he','her','his','in','into','is','it','not','of','on','or','she','that','the','their','there','they','this','to','was','were','with','you']),
+    es: new Set(['a','al','como','con','de','del','el','ella','en','era','esta','fue','la','las','los','mas','no','o','para','pero','por','que','se','sin','su','un','una','y']),
+  };
+  const scores = Object.entries(dictionaries).map(([languageCode, words]) => ({ languageCode, hits: tokens.filter(token => words.has(token)).length }));
+  scores.sort((a, b) => b.hits - a.hits);
+  const accentedPortuguese = /[ãõçáéíóúâêôà]/i.test(text);
+  if (accentedPortuguese) scores.find(score => score.languageCode === 'pt-BR')!.hits += 3;
+  scores.sort((a, b) => b.hits - a.hits);
+  const winner = scores[0];
+  const second = scores[1];
+  const minimumHits = Math.max(2, Math.ceil(tokens.length * 0.04));
+  if (winner.hits < minimumHits || winner.hits <= second.hits) return { languageCode: 'und', confidence: 0, evidence: 'Detecção local inconclusiva' };
+  const confidence = Math.min(0.98, Math.max(0.65, winner.hits / Math.max(1, winner.hits + second.hits)));
+  return { languageCode: winner.languageCode, confidence, evidence: `Detecção local por ${winner.hits} palavras funcionais distintivas` };
 }
 
 export interface OcrBatch {
