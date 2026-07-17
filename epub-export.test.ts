@@ -10,6 +10,13 @@ import { buildTranslatedBookArtifacts, registerTranslatedBookRoutes, type Transl
 
 const tempDirs: string[] = [];
 
+function binaryParser(res: any, callback: (error: Error | null, body?: Buffer) => void) {
+  const chunks: Buffer[] = [];
+  res.on('data', (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+  res.on('end', () => callback(null, Buffer.concat(chunks)));
+  res.on('error', (error: Error) => callback(error));
+}
+
 function fixture(complete = true) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'voxlibro-epub-'));
   tempDirs.push(root);
@@ -84,10 +91,12 @@ describe('exportação EPUB 3', () => {
 
     const response = await request(app)
       .get(`/api/projects/${projectId}/translated-book/download?format=epub`)
+      .buffer(true)
+      .parse(binaryParser)
       .expect(200);
     expect(response.headers['content-type']).toContain('application/epub+zip');
     expect(response.headers['content-disposition']).toContain('.pt-BR.epub');
-    expect(validateEpub3(Buffer.from(response.body), 2)).toBe(true);
+    expect(validateEpub3(response.body as Buffer, 2)).toBe(true);
   });
 
   it('inclui o EPUB dentro do pacote completo', async () => {
@@ -98,8 +107,10 @@ describe('exportação EPUB 3', () => {
 
     const response = await request(app)
       .get(`/api/projects/${projectId}/translated-book/download?format=zip`)
+      .buffer(true)
+      .parse(binaryParser)
       .expect(200);
-    const bundle = new AdmZip(Buffer.from(response.body));
+    const bundle = new AdmZip(response.body as Buffer);
     const epub = bundle.getEntry('livro-traduzido.epub');
     expect(epub).toBeTruthy();
     expect(validateEpub3(epub!.getData(), 2)).toBe(true);
