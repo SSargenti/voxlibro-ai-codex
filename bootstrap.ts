@@ -1,6 +1,9 @@
 import { registerProjectBackupRoutes } from './src/projectBackup';
 import { configureOpenAiModelRouting } from './src/openAiModelRouting';
 import { registerProjectCostEstimateRoutes } from './src/projectCostEstimate';
+import { registerTranslatedBookEligibilityGuard } from './src/translatedBookEligibility';
+import { registerTranslatedBookRoutes } from './src/translatedBookExport';
+import { registerTranslationMemoryRoutes } from './src/translationMemory';
 
 async function bootstrap() {
   const previousVitest = process.env.VITEST;
@@ -13,15 +16,18 @@ async function bootstrap() {
 
   configureOpenAiModelRouting(server as any);
 
-  registerProjectBackupRoutes(server.app, () => ({
+  const storageProvider = () => ({
     projectsRoot: server.PROJECTS_ROOT,
     projectsDbFile: server.PROJECTS_DB_FILE,
-  }));
+  });
 
-  registerProjectCostEstimateRoutes(server.app, () => ({
-    projectsRoot: server.PROJECTS_ROOT,
-    projectsDbFile: server.PROJECTS_DB_FILE,
-  }));
+  registerProjectBackupRoutes(server.app, storageProvider);
+  registerProjectCostEstimateRoutes(server.app, storageProvider);
+  registerTranslationMemoryRoutes(server.app, storageProvider, {
+    startProjectJob: server.startProjectJob,
+  });
+  registerTranslatedBookEligibilityGuard(server.app, storageProvider);
+  registerTranslatedBookRoutes(server.app, storageProvider);
 
   await server.startServer();
 }
