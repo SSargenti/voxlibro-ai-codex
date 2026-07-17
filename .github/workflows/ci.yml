@@ -32,19 +32,25 @@ jobs:
       - name: TypeScript
         id: typescript
         continue-on-error: true
-        run: npm run lint 2>&1 | tee typescript.log
+        run: |
+          set -o pipefail
+          npm run lint 2>&1 | tee typescript.log
 
       - name: Build
         id: build
         if: steps.typescript.outcome == 'success'
         continue-on-error: true
-        run: npm run build 2>&1 | tee build.log
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee build.log
 
       - name: Tests
         id: tests
         if: steps.typescript.outcome == 'success' && steps.build.outcome == 'success'
         continue-on-error: true
-        run: npm run test:run 2>&1 | tee tests.log
+        run: |
+          set -o pipefail
+          npm run test:run 2>&1 | tee tests.log
 
       - name: Upload validation logs
         if: always()
