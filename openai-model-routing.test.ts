@@ -17,7 +17,9 @@ describe('OpenAI model routing and provider-specific errors', () => {
     expect(selectEscalatedModel('gpt-5.6-luna', 1)).toBe('gpt-5.6-luna');
     expect(selectEscalatedModel('gpt-5.6-luna', 2)).toBe('gpt-5.6-terra');
     expect(selectEscalatedModel('gpt-5.6-luna', 3)).toBe('gpt-5.6-sol');
-    expect(selectEscalatedModel('gpt-5.6-terra', 2)).toBe('gpt-5.6-sol');
+    expect(selectEscalatedModel('gpt-5.6-terra', 1)).toBe('gpt-5.6-terra');
+    expect(selectEscalatedModel('gpt-5.6-terra', 2)).toBe('gpt-5.6-terra');
+    expect(selectEscalatedModel('gpt-5.6-terra', 3)).toBe('gpt-5.6-sol');
     expect(selectEscalatedModel('gpt-5.6-sol', 5)).toBe('gpt-5.6-sol');
   });
 
