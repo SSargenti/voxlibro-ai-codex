@@ -1636,6 +1636,40 @@ export function detectLanguageLocally(text: string): { languageCode: string; con
   return { languageCode: winner.languageCode, confidence, evidence: `Detecção local por ${winner.hits} palavras funcionais distintivas` };
 }
 
+function normalizeForTranslationComparison(text: string): string {
+  return String(text || '')
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+export function isLikelyUntranslatedCopy(originalText: string, translatedText: string, targetLanguage: string = 'pt-BR'): boolean {
+  const original = String(originalText || '').trim();
+  const translated = String(translatedText || '').trim();
+  if (!original || !translated) return false;
+
+  const normalizedOriginal = normalizeForTranslationComparison(original);
+  const normalizedTranslated = normalizeForTranslationComparison(translated);
+  if (normalizedOriginal.length > 30 && normalizedOriginal === normalizedTranslated) {
+    return true;
+  }
+
+  if (targetLanguage === 'pt-BR' && translated.length > 100) {
+    const sourceLanguage = detectLanguageLocally(original);
+    const outputLanguage = detectLanguageLocally(translated);
+    const sourceLooksNonPortuguese = sourceLanguage.confidence >= 0.65 && !isPortuguese(sourceLanguage.languageCode);
+    const outputLooksNonPortuguese = outputLanguage.confidence >= 0.65 && !isPortuguese(outputLanguage.languageCode);
+    if (sourceLooksNonPortuguese && outputLooksNonPortuguese && sourceLanguage.languageCode === outputLanguage.languageCode) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export interface OcrBatch {
   pageStart: number;
   pageEnd: number;
@@ -4317,6 +4351,20 @@ app.post('/api/projects/:projectId/translate', async (req, res) => {
     return res.json({ project, chapters });
   }
 
+  let clearedInvalidTranslations = 0;
+  for (const ch of chapters) {
+    if (ch.translatedText && isLikelyUntranslatedCopy(ch.originalText || '', ch.translatedText || '')) {
+      ch.translatedText = undefined;
+      ch.status = 'pending';
+      ch.translationValidationError = 'A tradução anterior parecia ser uma cópia do original e foi marcada para reprocessamento.';
+      clearedInvalidTranslations++;
+    }
+  }
+  if (clearedInvalidTranslations > 0) {
+    fs.writeFileSync(chaptersFile, JSON.stringify(chapters, null, 2));
+    writeStructuredLog(projectId, 'translation', 'success', { event: 'invalid_cache_cleared', clearedInvalidTranslations });
+  }
+
   // Save glossary entries if provided
   let cleanGlossaryEntries: any[] = [];
   if (glossaryEntries) {
@@ -6966,6 +7014,12 @@ function findCompletedJobItem(allJobs: Job[], operation: string, inputHash: stri
           item.model === model &&
           item.result
         ) {
+          if (
+            operation === 'translation' &&
+            isLikelyUntranslatedCopy(item.payload?.text || '', item.result?.translatedText || '')
+          ) {
+            continue;
+          }
           return item;
         }
       }
@@ -7007,6 +7061,10 @@ export function validateTranslatedChunk(originalText: string, translatedText: st
     return { valid: false, reason: 'Saída vazia' };
   }
 
+  if (isLikelyUntranslatedCopy(originalText, trimmed, targetLanguage)) {
+    return { valid: false, reason: 'A saída parece ser uma cópia não traduzida do texto original' };
+  }
+
   // Check for preambles or conversational commentary
   const preambles = [
     'aqui está a tradução', 'segue a tradução', 'tradução do texto',
@@ -7036,6 +7094,11 @@ export function validateTranslatedChunk(originalText: string, translatedText: st
 
   // Target language stopwords indication check
   if (trimmed.length > 100 && targetLanguage === 'pt-BR') {
+    const detectedOutput = detectLanguageLocally(trimmed);
+    if (detectedOutput.confidence >= 0.65 && !isPortuguese(detectedOutput.languageCode)) {
+      return { valid: false, reason: `O idioma da tradução parece ser ${detectedOutput.languageCode}, não Português` };
+    }
+
     const ptIndicators = /\b(o|a|e|de|do|da|em|para|que|uma|com|os|as|um|ao|por|se|mais|não)\b/gi;
     const matches = trimmed.match(ptIndicators);
     if (!matches || matches.length < 2) {
@@ -7643,12 +7706,13 @@ export async function runTaskForItem(operation: string, item: JobItem): Promise<
   }
 
   if (operation === 'translation') {
-    const isPtBr = isPortuguese(item.payload.text);
+    const detectedInputLanguage = detectLanguageLocally(item.payload.text || '');
+    const isPtBr = isPortuguese(detectedInputLanguage.languageCode) && detectedInputLanguage.confidence >= 0.75;
     if (isPtBr) {
       item.entrada = item.payload.text;
       item.saida = item.payload.text;
       item.saída = item.payload.text;
-      return { translatedText: item.payload.text };
+      return { translatedText: item.payload.text, translationNotRequired: true };
     }
 
     const styleRules = item.payload.style || 'literário';
