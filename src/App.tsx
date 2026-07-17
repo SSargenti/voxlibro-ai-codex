@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AudioLines, BookOpen, Check, ChevronLeft, CircleDollarSign, Download, FileAudio,
-  FileText, Gauge, KeyRound, Library, LoaderCircle, Mic2, MoreVertical, Play,
+  FileText, Gauge, KeyRound, Library, LoaderCircle, Mic2, Play,
   Plus, RefreshCw, Save, Search, Settings, Sparkles, Trash2, Upload, Users, WandSparkles, Music,
 } from 'lucide-react';
 
@@ -44,6 +44,29 @@ const post = (url: string, body?: unknown) => api(url, {
   method: 'POST', headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
   body: body === undefined ? undefined : JSON.stringify(body),
 });
+
+async function downloadProjectBackup(projectId: string, projectName: string) {
+  const response = await fetch(`/api/projects/${projectId}/backup`, { method: 'POST' });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data?.error?.message || data?.error || 'Não foi possível preparar o pacote do projeto.');
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const fallbackName = `${(projectName || 'projeto').replace(/[^a-zA-Z0-9._-]+/g, '-')}.voxlibro.zip`;
+  const fileName = encodedName ? decodeURIComponent(encodedName) : fallbackName;
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  return { fileName };
+}
 
 async function finishQueuedJob(projectId: string, started: any) {
   let job = started?.job;
@@ -131,6 +154,30 @@ export default function App() {
     } catch (e: any) { setNotice({ kind: 'error', text: e.message }); }
     finally { setBusy(''); }
   };
+  const restoreProject = async (file: File) => {
+    setBusy('restore');
+    setNotice(null);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const result = await api('/api/projects/restore', { method: 'POST', body: form });
+      const projectId = result?.project?.projectId;
+      if (!projectId) throw new Error('O servidor não retornou o projeto restaurado.');
+      const resumeStep = steps.some(item => item.id === result.resumeStep) ? result.resumeStep as StepId : 'source';
+      localStorage.setItem('voxlibro.project', projectId);
+      localStorage.setItem(`voxlibro.step.${projectId}`, resumeStep);
+      const data = await api(`/api/projects/${projectId}`);
+      setDetail(data);
+      setStep(resumeStep);
+      setView('workspace');
+      await loadProjects();
+      setNotice({ kind: 'ok', text: resumeStep === 'audio' ? 'Projeto restaurado. O roteiro foi preservado e está pronto para gerar áudio.' : 'Projeto restaurado com sucesso.' });
+    } catch (e: any) {
+      setNotice({ kind: 'error', text: e.message });
+    } finally {
+      setBusy('');
+    }
+  };
   const changeStep = (id: StepId) => {
     setStep(id); if (detail) localStorage.setItem(`voxlibro.step.${detail.project.projectId}`, id);
   };
@@ -166,7 +213,7 @@ export default function App() {
 
     {notice && <div className={`toast ${notice.kind}`} onClick={() => setNotice(null)}>{notice.kind === 'ok' ? <Check size={16}/> : null}{notice.text}</div>}
 
-    {view === 'projects' && <Projects projects={projects} openProject={openProject} onCreate={() => setCreateOpen(true)} onDelete={async (id: string) => {
+    {view === 'projects' && <Projects projects={projects} openProject={openProject} onCreate={() => setCreateOpen(true)} onRestore={restoreProject} restoring={busy === 'restore'} onDelete={async (id: string) => {
       if (!confirm('Excluir este projeto e os arquivos gerados?')) return;
       await api(`/api/projects/${id}`, { method: 'DELETE' }); await loadProjects();
     }}/>} 
@@ -176,10 +223,16 @@ export default function App() {
   </div>;
 }
 
-function Projects({ projects, openProject, onCreate, onDelete }: any) {
-  return <main className="page"><section className="hero"><div><span className="eyebrow">ESTÚDIO DE AUDIONOVELAS</span><h1>Da obra ao áudio,<br/><em>com controle editorial.</em></h1><p>Importe, traduza, defina o elenco, revise o roteiro e gere somente o que aprovou.</p></div><Button onClick={onCreate}><Plus size={17}/>Nova produção</Button></section>
+function Projects({ projects, openProject, onCreate, onRestore, restoring, onDelete }: any) {
+  const restoreInput = useRef<HTMLInputElement>(null);
+  const selectRestore = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (file) void onRestore(file);
+  };
+  return <main className="page"><section className="hero"><div><span className="eyebrow">ESTÚDIO DE AUDIONOVELAS</span><h1>Da obra ao áudio,<br/><em>com controle editorial.</em></h1><p>Importe, traduza, defina o elenco, revise o roteiro e gere somente o que aprovou.</p></div><div className="panel-actions"><input ref={restoreInput} hidden type="file" accept=".zip,.voxlibro,application/zip" onChange={selectRestore}/><Button variant="quiet" busy={restoring} onClick={() => restoreInput.current?.click()}><Upload size={17}/>Restaurar projeto</Button><Button onClick={onCreate}><Plus size={17}/>Nova produção</Button></div></section>
     <div className="section-heading"><div><h2>Suas produções</h2><p>{projects.length} {projects.length === 1 ? 'projeto' : 'projetos'} neste estúdio</p></div></div>
-    {projects.length === 0 ? <Empty icon={BookOpen} title="Sua estante está vazia" text="Comece importando um PDF, DOCX, EPUB, TXT ou HTML." action={<Button onClick={onCreate}><Upload size={16}/>Importar primeira obra</Button>}/> : <div className="project-grid">{projects.map((p: Project) => <article className="project-card" key={p.projectId} onClick={() => openProject(p.projectId)}><div className="cover"><BookOpen size={30}/><span>{p.productionMode === 'audiodrama' ? 'DRAMA' : p.productionMode === 'technical' ? 'TÉCNICO' : 'LIVRO'}</span></div><div className="project-info"><div className="card-top"><span className="status-dot"/> {statusLabel(p.status)}<button aria-label="Excluir" onClick={e => { e.stopPropagation(); onDelete(p.projectId); }}><Trash2 size={15}/></button></div><h3>{p.name}</h3><p>{p.wordCount?.toLocaleString('pt-BR') || 0} palavras · {p.sourceLanguage || 'idioma automático'}</p><div className="progress"><i style={{ width: `${projectProgress(p.status)}%` }}/></div><small>{projectProgress(p.status)}% do fluxo</small></div></article>)}</div>}
+    {projects.length === 0 ? <Empty icon={BookOpen} title="Sua estante está vazia" text="Importe uma obra nova ou restaure um pacote de projeto VoxLibro." action={<div className="panel-actions"><Button variant="quiet" onClick={() => restoreInput.current?.click()}><Upload size={16}/>Restaurar projeto</Button><Button onClick={onCreate}><Upload size={16}/>Importar primeira obra</Button></div>}/> : <div className="project-grid">{projects.map((p: Project) => <article className="project-card" key={p.projectId} onClick={() => openProject(p.projectId)}><div className="cover"><BookOpen size={30}/><span>{p.productionMode === 'audiodrama' ? 'DRAMA' : p.productionMode === 'technical' ? 'TÉCNICO' : 'LIVRO'}</span></div><div className="project-info"><div className="card-top"><span className="status-dot"/> {statusLabel(p.status)}<button aria-label="Excluir" onClick={e => { e.stopPropagation(); onDelete(p.projectId); }}><Trash2 size={15}/></button></div><h3>{p.name}</h3><p>{p.wordCount?.toLocaleString('pt-BR') || 0} palavras · {p.sourceLanguage || 'idioma automático'}</p><div className="progress"><i style={{ width: `${projectProgress(p.status)}%` }}/></div><small>{projectProgress(p.status)}% do fluxo</small></div></article>)}</div>}
   </main>;
 }
 
@@ -200,7 +253,7 @@ function CreateProject({ close, created }: any) {
 
 function Workspace({ detail, step, changeStep, run, busy, refresh, goBack, setDetail }: any) {
   const { project, chapters, characters, segments } = detail;
-  return <div className="workspace"><aside className="workflow-nav"><button className="back" onClick={goBack}><ChevronLeft size={17}/>Projetos</button><div className="book-mini"><div><BookOpen size={20}/></div><span><strong>{project.name}</strong><small>{statusLabel(project.status)}</small></span></div><ol>{steps.map((item, index) => { const Icon = item.icon; return <li key={item.id}><button className={step === item.id ? 'active' : ''} onClick={() => changeStep(item.id)}><span>{index + 1}</span><Icon size={17}/>{item.label}</button></li>; })}</ol><div className="workflow-note"><Gauge size={18}/><span><strong>Estado preservado</strong><small>Você volta exatamente a esta etapa.</small></span></div></aside><main className="stage"><div className="stage-top"><div><span className="eyebrow">{statusLabel(project.status)}</span><h1>{steps.find(s => s.id === step)?.label}</h1></div><Button variant="quiet" onClick={refresh}><RefreshCw size={16}/>Atualizar</Button></div>
+  return <div className="workspace"><aside className="workflow-nav"><button className="back" onClick={goBack}><ChevronLeft size={17}/>Projetos</button><div className="book-mini"><div><BookOpen size={20}/></div><span><strong>{project.name}</strong><small>{statusLabel(project.status)}</small></span></div><ol>{steps.map((item, index) => { const Icon = item.icon; return <li key={item.id}><button className={step === item.id ? 'active' : ''} onClick={() => changeStep(item.id)}><span>{index + 1}</span><Icon size={17}/>{item.label}</button></li>; })}</ol><div className="workflow-note"><Gauge size={18}/><span><strong>Estado preservado</strong><small>Baixe o pacote para restaurar este ponto depois.</small></span></div></aside><main className="stage"><div className="stage-top"><div><span className="eyebrow">{statusLabel(project.status)}</span><h1>{steps.find(s => s.id === step)?.label}</h1></div><div className="panel-actions"><Button variant="quiet" busy={busy === 'backup'} onClick={() => run('backup', () => downloadProjectBackup(project.projectId, project.name), 'Pacote do projeto baixado. O roteiro poderá ser restaurado sem nova geração.')}><Download size={16}/>Baixar projeto</Button><Button variant="quiet" onClick={refresh}><RefreshCw size={16}/>Atualizar</Button></div></div>
     {step === 'source' && <SourcePanel detail={detail} run={run} busy={busy} changeStep={changeStep}/>} 
     {step === 'translation' && <TranslationPanel project={project} chapters={chapters} run={run} busy={busy}/>} 
     {step === 'bible' && <BiblePanel characters={characters} run={run} project={project} busy={busy}/>} 
