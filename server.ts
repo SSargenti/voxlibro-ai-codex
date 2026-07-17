@@ -372,6 +372,13 @@ export interface ResolvedGcpCreds {
   source: 'env_json' | 'env_adc' | 'env_tts' | 'stored_disk' | 'stored_session' | 'none';
 }
 
+export function extractGoogleBearerToken(headers: any): string | undefined {
+  const authHeader = typeof headers?.get === 'function'
+    ? (headers.get('authorization') || headers.get('Authorization'))
+    : (headers?.authorization || headers?.Authorization);
+  return typeof authHeader === 'string' && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+}
+
 export async function getActiveGcpCredentials(): Promise<ResolvedGcpCreds> {
   // Service Account OAuth2 must win over legacy API keys.
   if (process.env.GCP_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS) {
@@ -381,8 +388,8 @@ export async function getActiveGcpCredentials(): Promise<ResolvedGcpCreds> {
     }
     try {
       const auth = getGoogleAuth(); const client = await auth.getClient(); const headers = await client.getRequestHeaders();
-      const authHeader = headers['Authorization'];
-      if (authHeader?.startsWith('Bearer ')) return { type:'adc', keyOrToken:authHeader.substring(7), source:process.env.GCP_CREDENTIALS ? 'env_json' : 'env_adc' };
+      const token = extractGoogleBearerToken(headers);
+      if (token) return { type:'adc', keyOrToken:token, source:process.env.GCP_CREDENTIALS ? 'env_json' : 'env_adc' };
     } catch (err:any) { console.warn('Falha ao obter token OAuth2 da Service Account:', redactSensitiveData(err.message)); }
     return { type:'adc', source:process.env.GCP_CREDENTIALS ? 'env_json' : 'env_adc' };
   }
@@ -410,9 +417,8 @@ export async function getActiveGcpCredentials(): Promise<ResolvedGcpCreds> {
       const auth = getGoogleAuth();
       const client = await auth.getClient();
       const headers = await client.getRequestHeaders();
-      const authHeader = headers['Authorization'];
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.substring(7);
+      const token = extractGoogleBearerToken(headers);
+      if (token) {
         return { type: 'adc', keyOrToken: token, source: stored && stored.method === 'adc' ? 'stored_disk' : 'env_adc' };
       }
     } catch (err) {

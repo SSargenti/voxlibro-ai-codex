@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GeminiTtsProvider, GoogleCloudTtsProvider, synthesizeTtsForSegment, ttsProviders, parseGcpServiceAccountCredentials } from './server';
+import { GeminiTtsProvider, GoogleCloudTtsProvider, synthesizeTtsForSegment, ttsProviders, parseGcpServiceAccountCredentials, extractGoogleBearerToken } from './server';
 
 describe('VoxLibro C11 - Vozes Reais e Provedores Separados', () => {
   beforeEach(() => {
@@ -33,6 +33,12 @@ describe('VoxLibro C11 - Vozes Reais e Provedores Separados', () => {
   it('recusa JSON incompleto ou inválido em GCP_CREDENTIALS', () => {
     expect(() => parseGcpServiceAccountCredentials('{invalido')).toThrow('JSON válido');
     expect(() => parseGcpServiceAccountCredentials(JSON.stringify({ type:'service_account' }))).toThrow('client_email');
+  });
+
+  it('extrai Bearer token de Headers ou de objetos com caixa variável', () => {
+    expect(extractGoogleBearerToken({ Authorization:'Bearer token-a' })).toBe('token-a');
+    expect(extractGoogleBearerToken({ authorization:'Bearer token-b' })).toBe('token-b');
+    expect(extractGoogleBearerToken(new Headers({ authorization:'Bearer token-c' }))).toBe('token-c');
   });
 
   it('não deve mostrar vozes Cloud se o provedor GCP não estiver configurado', async () => {
