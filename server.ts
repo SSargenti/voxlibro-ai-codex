@@ -229,17 +229,40 @@ try {
 
 // Auth client
 let googleAuthClient: GoogleAuth | null = null;
+let googleAuthConfigKey = '';
+
+export type GcpServiceAccountCredentials = {
+  type: 'service_account'; project_id: string; client_email: string; private_key: string;
+  private_key_id?: string; client_id?: string; token_uri?: string;
+};
+
+export function parseGcpServiceAccountCredentials(raw = process.env.GCP_CREDENTIALS): GcpServiceAccountCredentials | null {
+  if (!raw?.trim()) return null;
+  let parsed: any;
+  try { parsed = JSON.parse(raw); }
+  catch { throw new Error('GCP_CREDENTIALS não contém um JSON válido'); }
+  if (parsed.type !== 'service_account' || !parsed.project_id || !parsed.client_email || !parsed.private_key) {
+    throw new Error('GCP_CREDENTIALS deve conter type=service_account, project_id, client_email e private_key');
+  }
+  return { ...parsed, private_key: String(parsed.private_key).replace(/\\n/g, '\n') };
+}
+
 export function getGoogleAuth(): GoogleAuth {
-  if (!googleAuthClient) {
-    googleAuthClient = new GoogleAuth({
+  const configKey = crypto.createHash('sha256').update(`${process.env.GCP_CREDENTIALS || ''}|${process.env.GOOGLE_APPLICATION_CREDENTIALS || ''}`).digest('hex');
+  if (!googleAuthClient || googleAuthConfigKey !== configKey) {
+    const credentials = parseGcpServiceAccountCredentials();
+    googleAuthClient = new GoogleAuth(credentials ? {
+      credentials,
+      projectId: credentials.project_id,
       scopes: ['https://www.googleapis.com/auth/cloud-platform']
-    });
+    } : { scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
+    googleAuthConfigKey = configKey;
   }
   return googleAuthClient;
 }
 
 export async function checkAdcConfigured(): Promise<boolean> {
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  if (process.env.GCP_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS) {
     return true;
   }
   try {
@@ -346,11 +369,25 @@ export function updateAiClient() {
 export interface ResolvedGcpCreds {
   type: 'apiKey' | 'adc' | 'none';
   keyOrToken?: string;
-  source: 'env_adc' | 'env_tts' | 'stored_disk' | 'stored_session' | 'none';
+  source: 'env_json' | 'env_adc' | 'env_tts' | 'stored_disk' | 'stored_session' | 'none';
 }
 
 export async function getActiveGcpCredentials(): Promise<ResolvedGcpCreds> {
-  // 1. Session key GCP TTS
+  // Service Account OAuth2 must win over legacy API keys.
+  if (process.env.GCP_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    if (process.env.GCP_CREDENTIALS) {
+      try { parseGcpServiceAccountCredentials(); }
+      catch (err:any) { console.warn('GCP_CREDENTIALS inválida:', redactSensitiveData(err.message)); return { type:'none', source:'none' }; }
+    }
+    try {
+      const auth = getGoogleAuth(); const client = await auth.getClient(); const headers = await client.getRequestHeaders();
+      const authHeader = headers['Authorization'];
+      if (authHeader?.startsWith('Bearer ')) return { type:'adc', keyOrToken:authHeader.substring(7), source:process.env.GCP_CREDENTIALS ? 'env_json' : 'env_adc' };
+    } catch (err:any) { console.warn('Falha ao obter token OAuth2 da Service Account:', redactSensitiveData(err.message)); }
+    return { type:'adc', source:process.env.GCP_CREDENTIALS ? 'env_json' : 'env_adc' };
+  }
+
+  // 1. Session key GCP TTS (legacy compatibility)
   if (sessionGcpTtsApiKey) {
     return { type: 'apiKey', keyOrToken: sessionGcpTtsApiKey, source: 'stored_session' };
   }
@@ -367,7 +404,7 @@ export async function getActiveGcpCredentials(): Promise<ResolvedGcpCreds> {
   }
 
   // 4. ADC somente se o método ADC tiver sido explicitamente selecionado/configurado
-  const adcExplicitlySelected = (stored && stored.method === 'adc') || !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const adcExplicitlySelected = stored && stored.method === 'adc';
   if (adcExplicitlySelected) {
     try {
       const auth = getGoogleAuth();
@@ -388,6 +425,9 @@ export async function getActiveGcpCredentials(): Promise<ResolvedGcpCreds> {
 }
 
 export function isGcpConfiguredSync(): boolean {
+  if (process.env.GCP_CREDENTIALS) {
+    try { return !!parseGcpServiceAccountCredentials(); } catch { return false; }
+  }
   if (sessionGcpTtsApiKey) return true;
   if (process.env.GOOGLE_CLOUD_TTS_API_KEY) return true;
   const stored = getStoredCredentials();
@@ -1147,11 +1187,23 @@ export class GoogleCloudTtsProvider implements TtsProvider {
             });
           
           if (ptBrVoices.length > 0) {
+            gcpValidationStatus = 'valid';
+            gcpLastValidatedAt = new Date().toISOString();
             return ptBrVoices;
           }
         }
+      } else {
+        const errorText = await response.text(); const lower = errorText.toLowerCase();
+        gcpLastValidatedAt = new Date().toISOString();
+        if (response.status === 400 || response.status === 401) gcpValidationStatus = 'invalid';
+        else if (lower.includes('not enabled') || lower.includes('has not been used')) gcpValidationStatus = 'api_disabled';
+        else if (lower.includes('billing') || lower.includes('quota')) gcpValidationStatus = 'billing_missing';
+        else if (response.status === 403) gcpValidationStatus = 'no_permission';
+        else gcpValidationStatus = 'invalid';
       }
     } catch (err) {
+      gcpValidationStatus = 'invalid';
+      gcpLastValidatedAt = new Date().toISOString();
       console.warn('Failed to fetch dynamic voices from Google Cloud API, using versioned cache:', err);
     }
     
@@ -2585,6 +2637,7 @@ app.get('/api/capabilities', async (req, res) => {
   const hasGeminiKey = !!geminiKey;
   const gcpCreds = await getActiveGcpCredentials();
   const hasGcp = gcpCreds.type !== 'none';
+  if (gcpCreds.type === 'adc' && gcpValidationStatus !== 'valid') await ttsProviders.gcp.listVoices();
   const hasWavenetPtBr = hasGcp && gcpValidationStatus === 'valid';
 
   res.json({
@@ -2602,8 +2655,10 @@ app.get('/api/capabilities', async (req, res) => {
   });
 });
 
-app.get('/api/voices/catalog', (_req, res) => {
+app.get('/api/voices/catalog', async (_req, res) => {
   const geminiAvailable = !!getActiveGeminiApiKey();
+  const gcpCreds = await getActiveGcpCredentials();
+  if (gcpCreds.type === 'adc' && gcpValidationStatus !== 'valid') await ttsProviders.gcp.listVoices();
   const gcpAvailable = isGcpConfiguredSync() && gcpValidationStatus === 'valid';
   res.json({ voices: VOICE_CATALOG.map(voice => ({
     ...voice,
@@ -2681,6 +2736,7 @@ app.get('/api/settings/credentials/status', async (req, res) => {
   try {
     const creds = await getActiveGcpCredentials();
     const gcpConfigured = creds.type !== 'none';
+    if (creds.type === 'adc' && gcpValidationStatus !== 'valid') await ttsProviders.gcp.listVoices();
 
     const geminiKey = getActiveGeminiApiKey();
     const geminiConfigured = !!geminiKey;
@@ -2961,7 +3017,7 @@ app.get('/api/settings/credentials/google-cloud-tts/voices', async (req, res) =>
 app.delete('/api/settings/credentials/google-cloud-tts', async (req, res) => {
   try {
     const hasEnvKey = !!process.env.GOOGLE_CLOUD_TTS_API_KEY;
-    const hasEnvAdc = !!process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const hasEnvAdc = !!(process.env.GCP_CREDENTIALS || process.env.GOOGLE_APPLICATION_CREDENTIALS);
 
     sessionGcpTtsApiKey = null;
     gcpValidationStatus = 'unconfigured';
@@ -2978,7 +3034,7 @@ app.delete('/api/settings/credentials/google-cloud-tts', async (req, res) => {
     if (hasEnvKey || hasEnvAdc) {
       return res.json({
         status: 'success',
-        message: 'Credenciais locais/memória removidas. No entanto, as chaves fornecidas pelas variáveis de ambiente do servidor (GOOGLE_CLOUD_TTS_API_KEY / GOOGLE_APPLICATION_CREDENTIALS) permanecem ativas e devem ser removidas diretamente no ambiente do servidor.'
+        message: 'Credenciais locais/memória removidas. As credenciais definidas no ambiente do servidor (GCP_CREDENTIALS / GOOGLE_APPLICATION_CREDENTIALS / GOOGLE_CLOUD_TTS_API_KEY) permanecem ativas e devem ser removidas diretamente no Render.'
       });
     }
 

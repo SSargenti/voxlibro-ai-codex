@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GeminiTtsProvider, GoogleCloudTtsProvider, synthesizeTtsForSegment, ttsProviders } from './server';
+import { GeminiTtsProvider, GoogleCloudTtsProvider, synthesizeTtsForSegment, ttsProviders, parseGcpServiceAccountCredentials } from './server';
 
 describe('VoxLibro C11 - Vozes Reais e Provedores Separados', () => {
   beforeEach(() => {
@@ -19,6 +19,20 @@ describe('VoxLibro C11 - Vozes Reais e Provedores Separados', () => {
     expect(voices.map(v => v.voiceName)).toContain('Kore');
     expect(voices.map(v => v.voiceName)).toContain('Puck');
     expect(voices.map(v => v.voiceName)).toContain('Zephyr');
+  });
+
+  it('valida e normaliza o JSON da Service Account fornecido por GCP_CREDENTIALS', () => {
+    const credentials = parseGcpServiceAccountCredentials(JSON.stringify({
+      type: 'service_account', project_id: 'voxlibro-test', client_email: 'tts@voxlibro-test.iam.gserviceaccount.com',
+      private_key: '-----BEGIN PRIVATE KEY-----\\nTESTE\\n-----END PRIVATE KEY-----\\n'
+    }));
+    expect(credentials?.project_id).toBe('voxlibro-test');
+    expect(credentials?.private_key).toContain('\nTESTE\n');
+  });
+
+  it('recusa JSON incompleto ou inválido em GCP_CREDENTIALS', () => {
+    expect(() => parseGcpServiceAccountCredentials('{invalido')).toThrow('JSON válido');
+    expect(() => parseGcpServiceAccountCredentials(JSON.stringify({ type:'service_account' }))).toThrow('client_email');
   });
 
   it('não deve mostrar vozes Cloud se o provedor GCP não estiver configurado', async () => {

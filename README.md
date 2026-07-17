@@ -43,7 +43,9 @@ Abra `http://localhost:3000`. Também é possível inserir as três chaves na te
 
 - `OPENAI_API_KEY`: obrigatória para análise textual, tradução, bíblia e roteiro.
 - `GEMINI_API_KEY`: necessária somente para Gemini TTS.
-- `GOOGLE_CLOUD_TTS_API_KEY`: necessária somente para WaveNet/Neural2, ou use ADC via `GOOGLE_APPLICATION_CREDENTIALS`.
+- `GCP_CREDENTIALS`: JSON completo de uma Service Account com acesso ao Cloud Text-to-Speech; recomendado no Render.
+- `GOOGLE_APPLICATION_CREDENTIALS`: alternativa ADC apontando para um Secret File local.
+- `GOOGLE_CLOUD_TTS_API_KEY`: compatibilidade legada; não use quando a API exigir OAuth2.
 - `FREESOUND_API_KEY`: necessária para buscar e incorporar sons de contexto; autor e licença acompanham a exportação.
 - `VOXLIBRO_MASTER_KEY`: segredo com no mínimo 32 caracteres para persistir chaves criptografadas em disco. Sem ele, use armazenamento em memória.
 
