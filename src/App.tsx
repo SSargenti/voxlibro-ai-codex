@@ -88,7 +88,7 @@ function statusLabel(status: string) {
   const labels: Record<string, string> = {
     created: 'Criado', awaiting_configuration: 'Revisar obra', translating: 'Traduzindo',
     analyzing_characters: 'Analisando', awaiting_voice_approval: 'Definir elenco', scripting: 'Criar roteiro',
-    generating_audio: 'Gerando áudio', reviewing: 'Em revisão', completed: 'Concluído', failed: 'Atenção',
+    awaiting_audio_generation: 'Pronto para gerar áudio', generating_audio: 'Gerando áudio', reviewing: 'Em revisão', completed: 'Concluído', failed: 'Atenção',
   };
   return labels[status] || status?.replaceAll('_', ' ') || 'Novo';
 }
@@ -242,7 +242,7 @@ function Projects({ projects, openProject, onCreate, onRestore, restoring, onDel
 }
 
 function projectProgress(status: string) {
-  const value: Record<string, number> = { created: 5, awaiting_configuration: 15, translating: 28, analyzing_characters: 42, awaiting_voice_approval: 56, scripting: 68, generating_audio: 82, reviewing: 92, completed: 100 };
+  const value: Record<string, number> = { created: 5, awaiting_configuration: 15, translating: 28, analyzing_characters: 42, awaiting_voice_approval: 56, scripting: 68, awaiting_audio_generation: 82, generating_audio: 84, reviewing: 92, completed: 100 };
   return value[status] || 8;
 }
 
