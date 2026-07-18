@@ -234,6 +234,20 @@ export function saveScriptSegment(storage: VoiceScriptStorage, projectIdInput: s
 }
 
 export function registerVoiceScriptPersistenceRoutes(app: Express, storageProvider: () => VoiceScriptStorage) {
+  app.get('/api/projects/:projectId/script-review-state', (req: Request, res: Response) => {
+    try {
+      const storage = storageProvider();
+      const projectId = safeProjectId(req.params.projectId);
+      const project = getProject(storage, projectId);
+      if (!project) return res.status(404).json({ error: { code: 'PROJECT_NOT_FOUND', message: 'Projeto não encontrado.' } });
+      const limit = Math.max(1, Math.min(250, Number(req.query.limit || 120)));
+      const characters = readJson<any[]>(charactersPath(storage, projectId), []);
+      const allSegments = readJson<any[]>(segmentsPath(storage, projectId), []);
+      return res.json({ project, characters, segments: allSegments.slice(0, limit), totalSegments: allSegments.length });
+    } catch (error: any) {
+      return res.status(400).json({ error: { code: 'SCRIPT_REVIEW_STATE_FAILED', message: error?.message || 'Não foi possível carregar o roteiro.' } });
+    }
+  });
   app.put('/api/projects/:projectId/voice-assignments', (req: Request, res: Response) => {
     try { return res.json(saveVoiceAssignments(storageProvider(), req.params.projectId, req.body)); }
     catch (error: any) { return res.status(409).json({ error: { code: 'VOICE_ASSIGNMENT_SAVE_FAILED', message: error?.message || 'Não foi possível salvar a voz.' } }); }
