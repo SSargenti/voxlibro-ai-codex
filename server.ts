@@ -3228,6 +3228,53 @@ app.get('/api/projects/:projectId', (req, res) => {
   });
 });
 
+// Compact workspace state for large books. The complete segment list can be
+// several megabytes and must be read through the paginated segments endpoint.
+app.get('/api/projects/:projectId/workspace', (req, res) => {
+  const { projectId } = req.params;
+  const projects = getProjects();
+  const project = projects.find((p) => p.projectId === projectId);
+  if (!project) return res.status(404).json({ error: 'Projeto não encontrado' });
+
+  const requestedLimit = Number.parseInt(String(req.query.segmentLimit || '120'), 10);
+  const segmentLimit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 20), 200) : 120;
+  const projDir = path.join(PROJECTS_ROOT, projectId);
+  const readJson = (relativePath: string, fallback: any[] = []) => {
+    const filePath = path.join(projDir, relativePath);
+    if (!fs.existsSync(filePath)) return fallback;
+    try { return JSON.parse(fs.readFileSync(filePath, 'utf8')); } catch { return fallback; }
+  };
+
+  const chapters = readJson('normalized/chapters.json');
+  const characters = readJson('narrative-bible/characters.json');
+  const sightings = readJson('narrative-bible/sightings.json');
+  const mergeSuggestions = readJson('narrative-bible/merge-suggestions.json');
+  const glossary = readJson('translation/glossary.json');
+  const allSegments = readJson('scripts/segments.json');
+  const logs = readJson('logs/processing.json').slice(-100);
+  const contextSounds = readJson('audio/context-sounds.json');
+  const segmentSummary = allSegments.reduce((summary: Record<string, number>, segment: any) => {
+    const status = String(segment?.status || 'pending');
+    summary[status] = (summary[status] || 0) + 1;
+    return summary;
+  }, {});
+
+  return res.json({
+    project,
+    chapters,
+    characters,
+    sightings,
+    mergeSuggestions,
+    glossary,
+    segments: allSegments.slice(0, segmentLimit),
+    totalSegments: allSegments.length,
+    segmentSummary,
+    logs,
+    contextSounds,
+    apiQuotaState: { isGeminiQuotaExceeded, isGeminiTTSQuotaExceeded, isGoogleCloudTTSDisabled },
+  });
+});
+
 // GET text integrity report
 app.get('/api/projects/:projectId/integrity', (req, res) => {
   const { projectId } = req.params;
@@ -3645,7 +3692,7 @@ export async function extractPdf(buffer: Buffer): Promise<ExtractedResult> {
     await parser.destroy();
   }
   const pages = parsed.pages.map(page => ({ pageNumber: page.num, text: page.text }));
-  const text = parsed.text || pages.map(page => page.text).join('\n\n--- PAGE BREAK ---\n\n');
+  const text = parsed.text || pages.map(p => p.text).join('\n\n--- PAGE BREAK ---\n\n');
 
   // Detect scanned PDF
   const totalTextLen = text.replace(/\s/g, '').length;
