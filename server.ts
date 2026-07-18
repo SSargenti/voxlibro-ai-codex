@@ -12,9 +12,7 @@ import dotenv from 'dotenv';
 import AdmZip from 'adm-zip';
 import ffmpegPath from 'ffmpeg-static';
 import multer from 'multer';
-// @ts-ignore
-import * as pdfParseModule from 'pdf-parse';
-const pdfParse = ((pdfParseModule as any).default || pdfParseModule) as any;
+import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
 import * as cheerio from 'cheerio';
 import crypto from 'crypto';
@@ -3629,79 +3627,29 @@ export async function extractDocx(buffer: Buffer): Promise<ExtractedResult> {
 }
 
 export async function parsePdfPageByPage(buffer: Buffer): Promise<{ pageNumber: number; text: string }[]> {
-  const pages: { pageNumber: number; text: string }[] = [];
-  
-  function pagerender(pageData: any) {
-    return pageData.getTextContent().then(function(textContent: any) {
-      let lastY, text = '';
-      for (let item of textContent.items) {
-        if (lastY == undefined || lastY == item.transform[5]) {
-          text += item.str;
-        } else {
-          text += '\n' + item.str;
-        }
-        lastY = item.transform[5];
-      }
-      pages.push({
-        pageNumber: pageData.pageIndex + 1,
-        text: text
-      });
-      return text;
-    });
-  }
-
-  const options = {
-    pagerender: pagerender
-  };
-
+  const parser = new PDFParse({ data: buffer });
   try {
-    await pdfParse(buffer, options);
-  } catch (err) {
-    // If pdf-parse fails (e.g. because of corrupted format in tests), let's throw or handle it
-    if (pages.length === 0) {
-      throw err;
-    }
+    const parsed = await parser.getText();
+    return parsed.pages.map(page => ({ pageNumber: page.num, text: page.text }));
+  } finally {
+    await parser.destroy();
   }
-  
-  pages.sort((a, b) => a.pageNumber - b.pageNumber);
-  return pages;
 }
 
 export async function extractPdf(buffer: Buffer): Promise<ExtractedResult> {
-  const pages: { pageNumber: number; text: string }[] = [];
-  
-  function pagerender(pageData: any) {
-    return pageData.getTextContent().then(function(textContent: any) {
-      let lastY, text = '';
-      for (let item of textContent.items) {
-        if (lastY == undefined || lastY == item.transform[5]) {
-          text += item.str;
-        } else {
-          text += '\n' + item.str;
-        }
-        lastY = item.transform[5];
-      }
-      pages.push({
-        pageNumber: pageData.pageIndex + 1,
-        text: text
-      });
-      return text;
-    });
+  const parser = new PDFParse({ data: buffer });
+  let parsed: Awaited<ReturnType<PDFParse['getText']>>;
+  try {
+    parsed = await parser.getText();
+  } finally {
+    await parser.destroy();
   }
-
-  const options = {
-    pagerender: pagerender
-  };
-
-  const parsed = await pdfParse(buffer, options);
-  
-  pages.sort((a, b) => a.pageNumber - b.pageNumber);
-
-  const text = pages.map(p => p.text).join('\n\n--- PAGE BREAK ---\n\n');
+  const pages = parsed.pages.map(page => ({ pageNumber: page.num, text: page.text }));
+  const text = parsed.text || pages.map(page => page.text).join('\n\n--- PAGE BREAK ---\n\n');
 
   // Detect scanned PDF
   const totalTextLen = text.replace(/\s/g, '').length;
-  const numPages = parsed.numpages || pages.length || 1;
+  const numPages = parsed.total || pages.length || 1;
   const avgCharsPerPage = totalTextLen / numPages;
   const isScanned = totalTextLen < 150 || avgCharsPerPage < 30;
 
