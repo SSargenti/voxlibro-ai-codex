@@ -10,6 +10,11 @@ import { registerScriptGenerationJobRoutes } from './src/scriptGenerationJob';
 import { registerTranslatedBookEligibilityGuard } from './src/translatedBookEligibility';
 import { registerTranslatedBookRoutes } from './src/translatedBookExport';
 import { registerTranslationMemoryRoutes } from './src/translationMemory';
+import {
+  registerAudiobookNarrationPolicy,
+  withAudiobookContextReviewPolicy,
+} from './src/audiobookNarrationPolicy';
+import { registerAudiobookNarrationPolicyRoutes } from './src/audiobookNarrationPolicyRoutes';
 
 async function bootstrap() {
   const previousVitest = process.env.VITEST;
@@ -39,13 +44,17 @@ async function bootstrap() {
       server.performMapReduceCharacterAnalysis,
     ),
   });
+
+  registerAudiobookNarrationPolicyRoutes(server.app, storageProvider);
+  registerAudiobookNarrationPolicy(server.app, storageProvider);
+
   registerScriptGenerationJobRoutes(server.app, storageProvider, {
     generateContent: args => server.ai.models.generateContent(args),
     hasTextAi: server.hasTextAi,
     editorialModel: () => server.TEXT_MODELS.editorial,
   });
   registerScriptContextReviewRoutes(server.app, storageProvider, {
-    generateContent: args => server.ai.models.generateContent(args),
+    generateContent: withAudiobookContextReviewPolicy(args => server.ai.models.generateContent(args)),
     hasTextAi: server.hasTextAi,
     editorialModel: () => server.TEXT_MODELS.editorial,
     auditModel: () => server.TEXT_MODELS.audit,
