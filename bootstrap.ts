@@ -5,6 +5,7 @@ import { cleanupStaleCharacterAnalysisStages } from './src/characterAnalysisStag
 import { configureOpenAiModelRouting } from './src/openAiModelRouting';
 import { registerProjectCostEstimateRoutes } from './src/projectCostEstimate';
 import { registerEpubExportRoutes } from './src/epubExport';
+import { registerScriptContextReviewRoutes } from './src/scriptContextReview';
 import { registerScriptGenerationJobRoutes } from './src/scriptGenerationJob';
 import { registerTranslatedBookEligibilityGuard } from './src/translatedBookEligibility';
 import { registerTranslatedBookRoutes } from './src/translatedBookExport';
@@ -42,6 +43,12 @@ async function bootstrap() {
     generateContent: args => server.ai.models.generateContent(args),
     hasTextAi: server.hasTextAi,
     editorialModel: () => server.TEXT_MODELS.editorial,
+  });
+  registerScriptContextReviewRoutes(server.app, storageProvider, {
+    generateContent: args => server.ai.models.generateContent(args),
+    hasTextAi: server.hasTextAi,
+    editorialModel: () => server.TEXT_MODELS.editorial,
+    auditModel: () => server.TEXT_MODELS.audit,
   });
   registerTranslatedBookEligibilityGuard(server.app, storageProvider);
   registerEpubExportRoutes(server.app, storageProvider);
