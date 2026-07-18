@@ -281,17 +281,15 @@ function characterOption(character: any, selected = false) {
 
 async function updateSpeaker(projectId: string, segment: any, speakerId: string) {
   const response = await nativeFetch(
-    `/api/projects/${encodeURIComponent(projectId)}/script-generation/segments/${encodeURIComponent(segment.segmentId)}`,
+    `/api/projects/${encodeURIComponent(projectId)}/script-segments/${encodeURIComponent(segment.segmentId)}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ speakerId }),
+      body: JSON.stringify({ spokenText: segment.spokenText, speakerId, direction: segment.direction }),
     },
   );
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data?.error?.message || `HTTP ${response.status}`);
-  refreshButton()?.click();
-  await sleep(150);
   await refreshScriptReview();
 }
 
@@ -393,24 +391,6 @@ function renderReviewPanel(projectId: string, payload: ScriptJobResponse, detail
       : 'Nenhum locutor pendente. Atualize a página para recalcular o estado final do roteiro.';
     panel.appendChild(ready);
   }
-
-  const visibleCards = Array.from(document.querySelectorAll<HTMLElement>('.segments .segment'));
-  visibleCards.forEach((card, index) => {
-    const segment = segments[index];
-    if (!segment) return;
-    const meta = card.querySelector<HTMLElement>('.segment-meta');
-    if (!meta) return;
-    meta.querySelector('.script-speaker-inline')?.remove();
-    const wrapper = document.createElement('span');
-    wrapper.className = 'script-speaker-inline';
-    wrapper.appendChild(buildSpeakerSelect(projectId, segment, characters));
-    meta.prepend(wrapper);
-    const oldName = meta.querySelector<HTMLElement>('b');
-    if (oldName && segment.speakerId === 'unresolved') {
-      oldName.textContent = 'Locutor pendente';
-      oldName.classList.add('script-speaker-pending');
-    }
-  });
 }
 
 async function refreshScriptReview() {
@@ -421,7 +401,7 @@ async function refreshScriptReview() {
   try {
     const [statusResponse, detailResponse] = await Promise.all([
       nativeFetch(`/api/projects/${encodeURIComponent(projectId)}/script-generation/status`, { cache: 'no-store' }),
-      nativeFetch(`/api/projects/${encodeURIComponent(projectId)}`, { cache: 'no-store' }),
+      nativeFetch(`/api/projects/${encodeURIComponent(projectId)}/script-review-state?limit=120`, { cache: 'no-store' }),
     ]);
     if (statusResponse.status === 404 || !statusResponse.ok || !detailResponse.ok) return;
     const payload = await statusResponse.json() as ScriptJobResponse;

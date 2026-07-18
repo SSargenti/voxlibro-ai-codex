@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import {
   AudioLines, BookOpen, Check, ChevronLeft, CircleDollarSign, Download, FileAudio,
   FileText, Gauge, KeyRound, Library, LoaderCircle, Mic2, Play,
@@ -181,7 +181,7 @@ export default function App() {
   const changeStep = (id: StepId) => {
     setStep(id); if (detail) localStorage.setItem(`voxlibro.step.${detail.project.projectId}`, id);
   };
-  const run = async (name: string, fn: () => Promise<any>, success: string) => {
+  const run = async (name: string, fn: () => Promise<any>, success: string, refreshDetail = true) => {
     setBusy(name); setNotice(null);
     let result: any = null;
     let operationError: any = null;
@@ -193,7 +193,7 @@ export default function App() {
       setNotice({ kind: 'error', text: e.message });
     } finally {
       try {
-        await loadDetail();
+        if (refreshDetail) await loadDetail();
         await loadProjects();
       } catch (refreshError: any) {
         if (!operationError) setNotice({ kind: 'error', text: refreshError.message });
@@ -225,7 +225,7 @@ export default function App() {
 
 function Projects({ projects, openProject, onCreate, onRestore, restoring, onDelete }: any) {
   const restoreInput = useRef<HTMLInputElement>(null);
-  const selectRestore = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const selectRestore = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (file) void onRestore(file);
@@ -256,7 +256,7 @@ function Workspace({ detail, step, changeStep, run, busy, refresh, goBack, setDe
   return <div className="workspace"><aside className="workflow-nav"><button className="back" onClick={goBack}><ChevronLeft size={17}/>Projetos</button><div className="book-mini"><div><BookOpen size={20}/></div><span><strong>{project.name}</strong><small>{statusLabel(project.status)}</small></span></div><ol>{steps.map((item, index) => { const Icon = item.icon; return <li key={item.id}><button className={step === item.id ? 'active' : ''} onClick={() => changeStep(item.id)}><span>{index + 1}</span><Icon size={17}/>{item.label}</button></li>; })}</ol><div className="workflow-note"><Gauge size={18}/><span><strong>Estado preservado</strong><small>Baixe o pacote para restaurar este ponto depois.</small></span></div></aside><main className="stage"><div className="stage-top"><div><span className="eyebrow">{statusLabel(project.status)}</span><h1>{steps.find(s => s.id === step)?.label}</h1></div><div className="panel-actions"><Button variant="quiet" busy={busy === 'backup'} onClick={() => run('backup', () => downloadProjectBackup(project.projectId, project.name), 'Pacote do projeto baixado. O roteiro poderá ser restaurado sem nova geração.')}><Download size={16}/>Baixar projeto</Button><Button variant="quiet" onClick={refresh}><RefreshCw size={16}/>Atualizar</Button></div></div>
     {step === 'source' && <SourcePanel detail={detail} run={run} busy={busy} changeStep={changeStep}/>} 
     {step === 'translation' && <TranslationPanel project={project} chapters={chapters} run={run} busy={busy}/>} 
-    {step === 'bible' && <BiblePanel characters={characters} run={run} project={project} busy={busy}/>} 
+    {step === 'bible' && <BiblePanel characters={characters} run={run} project={project} busy={busy} setDetail={setDetail}/>} 
     {step === 'casting' && <CastingPanel detail={detail} setDetail={setDetail} run={run} busy={busy}/>} 
     {step === 'script' && <ScriptPanel detail={detail} setDetail={setDetail} run={run} busy={busy}/>} 
     {step === 'audio' && <AudioPanel detail={detail} setDetail={setDetail} run={run} busy={busy}/>} 
@@ -282,9 +282,13 @@ function TranslationPanel({ project, chapters, run, busy }: any) {
   return <><section className="panel"><div className="panel-title"><div><h2>Tradução editorial para pt-BR</h2><p>Compare com a fonte, corrija o texto traduzido e aprove capítulo por capítulo.</p></div><Sparkles size={21}/></div><div className="callout"><div><strong>{translated} de {chapters.length} capítulos traduzidos</strong><span>O original nunca é alterado; uma correção solicita nova revisão da Bíblia e do roteiro.</span></div></div><div className="panel-actions"><Button busy={busy === 'translate'} disabled={!project.translationEnabled} onClick={() => run('translate', async () => { const started = await post(`/api/projects/${project.projectId}/translate`, { glossaryEntries: [] }); await finishQueuedJob(project.projectId, started); }, 'Tradução concluída.')}><Sparkles size={16}/>{project.translationEnabled ? 'Traduzir obra' : 'Tradução desativada'}</Button></div></section>{chapter&&<section className="panel translation-review"><div className="review-toolbar"><label>Capítulo<select value={chapter.chapterId} onChange={e=>setSelected(e.target.value)}>{chapters.map((c:any)=><option key={c.chapterId} value={c.chapterId}>{c.order||''} · {c.title}</option>)}</select></label><span>{chapter.status==='translated_reviewed'?'Revisado manualmente':chapter.status}</span></div><div className="parallel-text"><label>Original<textarea readOnly value={chapter.originalText||''}/></label><label>Tradução editável<textarea value={draft} onChange={e=>setDraft(e.target.value)} placeholder="Gere a tradução para revisá-la aqui."/></label></div><div className="panel-actions"><Button busy={busy==='translation-review'} disabled={!draft.trim()||draft===chapter.translatedText} onClick={()=>run('translation-review',()=>api(`/api/projects/${project.projectId}/chapters/${chapter.chapterId}/translation`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({translatedText:draft})}),'Tradução revisada salva. Reavalie a Bíblia antes de refazer o roteiro.')}><Save size={16}/>Salvar correção</Button></div></section>}</>;
 }
 
-function BiblePanel({ characters, run, project, busy }: any) {
+function BiblePanel({ characters, run, project, busy, setDetail }: any) {
   const [editing,setEditing]=useState(''); const [mergeSource,setMergeSource]=useState(''); const [mergeTarget,setMergeTarget]=useState('');
-  const save=(c:any)=>run(`character-${c.characterId}`,()=>api(`/api/projects/${project.projectId}/characters/${c.characterId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)}),'Personagem atualizado na Bíblia.');
+  const save=async(c:any)=>{
+    const result=await run(`character-${c.characterId}`,()=>api(`/api/projects/${project.projectId}/characters/${c.characterId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)}),'Personagem atualizado na Bíblia.',false);
+    if(result?.characters) setDetail((detail:Detail)=>({...detail,characters:result.characters}));
+    return result;
+  };
   return <><section className="panel"><div className="panel-title"><div><h2>Bíblia narrativa editável</h2><p>Ajuste nomes e aliases, defina o narrador ou corrija identidades unindo e separando personagens.</p></div><BookOpen size={21}/></div><div className="merge-box"><select value={mergeSource} onChange={e=>setMergeSource(e.target.value)}><option value="">Personagem a unir…</option>{characters.map((c:any)=><option value={c.characterId} key={c.characterId}>{c.canonicalName}</option>)}</select><span>em</span><select value={mergeTarget} onChange={e=>setMergeTarget(e.target.value)}><option value="">Personagem principal…</option>{characters.filter((c:any)=>c.characterId!==mergeSource).map((c:any)=><option value={c.characterId} key={c.characterId}>{c.canonicalName}</option>)}</select><Button variant="quiet" busy={busy==='merge-character'} disabled={!mergeSource||!mergeTarget} onClick={()=>run('merge-character',()=>post(`/api/projects/${project.projectId}/merge-characters`,{sourceCharacterId:mergeSource,targetCharacterId:mergeTarget}),'Personagens unidos; roteiro remapeado.')}><Users size={15}/>Unir</Button></div><div className="panel-actions"><Button busy={busy === 'bible'} onClick={() => run('bible', () => post(`/api/projects/${project.projectId}/analyze-characters`, { forceFresh: false }), 'Bíblia narrativa atualizada.')}><WandSparkles size={16}/>{characters.length ? 'Reanalisar com continuidade' : 'Criar bíblia narrativa'}</Button></div></section>{characters.length ? <div className="character-grid bible-grid">{characters.map((c:any)=><CharacterEditor key={c.characterId} character={c} editing={editing===c.characterId} setEditing={setEditing} save={save} split={(alias:string)=>run(`split-${c.characterId}`,()=>post(`/api/projects/${project.projectId}/split-character`,{sourceCharacterId:c.characterId,alias}),'Alias separado como novo personagem; revise as falas no roteiro.')} busy={busy}/>)}</div> : <Empty icon={Users} title="Bíblia ainda não criada" text="A análise editorial formará o elenco canônico antes do casting."/>}</>;
 }
 
@@ -297,14 +301,41 @@ function CastingPanel({ detail, setDetail, run, busy }: any) {
   const update = (id: string, voice: string) => setDetail((d: Detail) => ({ ...d, characters: d.characters.map(c => c.characterId === id ? { ...c, voiceAssignmentId: voice, voiceAssignment: { providerId: voice.split(':')[0], voiceName: voice.split(':')[1] } } : c) }));
   const preview = async (id: string, voice: string, name: string) => { setPlaying(id); try { const d = await post('/api/tts-sample', { text: `Olá. Eu sou ${name}, e esta será a minha voz nesta história.`, voiceId: voice }); const audio = new Audio(`data:audio/wav;base64,${d.base64Audio}`); await audio.play(); } catch (e: any) { alert(e.message); } finally { setPlaying(''); } };
   const options = catalog.length ? catalog : voices.map(v => ({ id:v[0], label:v[1], costTier:'', available:true }));
-  return <section className="panel"><div className="panel-title"><div><h2>Elenco de vozes inteligente</h2><p>Sexo vocal, idade, timbre, energia, papel dramático, expressividade, provedor e custo entram na recomendação.</p></div><Mic2 size={21}/></div>{detail.characters.length === 0 ? <Empty icon={Users} title="Crie a bíblia primeiro" text="O casting depende dos personagens canônicos."/> : <div className="cast-list">{detail.characters.map((c: any) => { const selected = c.voiceAssignmentId || c.voiceRecommendations?.[0]?.voiceId || 'gemini:Kore'; const rec = c.voiceRecommendations?.find((item:any) => item.voiceId === selected) || c.voiceRecommendations?.[0]; return <div className="cast-row smart-cast" key={c.characterId}><div className="avatar">{c.canonicalName?.slice(0,1)}</div><div className="cast-name"><strong>{c.canonicalName}</strong><span>{c.role} · {c.voiceProfile?.gender || 'neutral'} · {c.voiceProfile?.age || 'adult'} · {c.voiceProfile?.timbre || 'neutral'}</span>{rec && <small><b>{rec.score}% compatível</b> — {rec.reasons?.join(', ')}</small>}</div><select value={selected} onChange={e => update(c.characterId, e.target.value)}>{options.map((v:any) => <option value={v.id} key={v.id} disabled={!v.available}>{v.label}{v.costTier ? ` · ${v.costTier}` : ''}{!v.available ? ' · indisponível' : ''}</option>)}</select><button className="icon-button" aria-label={`Ouvir ${c.canonicalName}`} onClick={() => preview(c.characterId, selected, c.canonicalName)}>{playing === c.characterId ? <LoaderCircle className="spin" size={18}/> : <Play size={18}/>}</button></div>; })}</div>}<div className="panel-actions"><Button busy={busy === 'voices'} disabled={!detail.characters.length} onClick={() => run('voices', () => post(`/api/projects/${detail.project.projectId}/voices`, { characters: detail.characters }), 'Elenco salvo. Alterações de voz invalidaram somente os trechos afetados.')}><Save size={16}/>Salvar elenco</Button></div></section>;
+  const save = async () => {
+    const result = await run('voices', () => api(`/api/projects/${detail.project.projectId}/voice-assignments`, {
+      method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ assignments: detail.characters }),
+    }), 'Elenco salvo. Somente os áudios afetados foram invalidados.', false);
+    if (result?.characters) setDetail((current: Detail) => ({
+      ...current,
+      project: result.project || current.project,
+      characters: result.characters,
+      segments: Array.isArray(result.segments) && result.segments.length ? result.segments : current.segments,
+    }));
+    return result;
+  };
+  return <section className="panel"><div className="panel-title"><div><h2>Elenco de vozes inteligente</h2><p>Sexo vocal, idade, timbre, energia, papel dramático, expressividade, provedor e custo entram na recomendação.</p></div><Mic2 size={21}/></div>{detail.characters.length === 0 ? <Empty icon={Users} title="Crie a bíblia primeiro" text="O casting depende dos personagens canônicos."/> : <div className="cast-list">{detail.characters.map((c: any) => { const selected = c.voiceAssignmentId || c.voiceRecommendations?.[0]?.voiceId || 'gemini:Kore'; const rec = c.voiceRecommendations?.find((item:any) => item.voiceId === selected) || c.voiceRecommendations?.[0]; return <div className="cast-row smart-cast" key={c.characterId}><div className="avatar">{c.canonicalName?.slice(0,1)}</div><div className="cast-name"><strong>{c.canonicalName}</strong><span>{c.role} · {c.voiceProfile?.gender || 'neutral'} · {c.voiceProfile?.age || 'adult'} · {c.voiceProfile?.timbre || 'neutral'}</span>{rec && <small><b>{rec.score}% compatível</b> — {rec.reasons?.join(', ')}</small>}</div><select value={selected} onChange={e => update(c.characterId, e.target.value)}>{options.map((v:any) => <option value={v.id} key={v.id} disabled={!v.available}>{v.label}{v.costTier ? ` · ${v.costTier}` : ''}{!v.available ? ' · indisponível' : ''}</option>)}</select><button className="icon-button" aria-label={`Ouvir ${c.canonicalName}`} onClick={() => preview(c.characterId, selected, c.canonicalName)}>{playing === c.characterId ? <LoaderCircle className="spin" size={18}/> : <Play size={18}/>}</button></div>; })}</div>}<div className="panel-actions"><Button busy={busy === 'voices'} disabled={!detail.characters.length} onClick={() => void save()}><Save size={16}/>Salvar elenco</Button></div></section>;
 }
 
 function ScriptPanel({ detail, setDetail, run, busy }: any) {
-  const saveSegment = async (segment: any) => { await post(`/api/projects/${detail.project.projectId}/segments/${segment.segmentId}`, { spokenText: segment.spokenText, speakerId: segment.speakerId, direction: segment.direction }); await run('refresh-segment', async () => {}, 'Trecho salvo; o áudio anterior foi invalidado.'); };
-  const edit = (id: string, value: string) => setDetail((d: Detail) => ({ ...d, segments: d.segments.map(s => s.segmentId === id ? { ...s, spokenText: value } : s) }));
+  const persistSegment = async (segment: any, success = 'Trecho salvo; o áudio anterior foi invalidado.') => {
+    const result = await run(`segment-${segment.segmentId}`, () => api(`/api/projects/${detail.project.projectId}/script-segments/${segment.segmentId}`, {
+      method:'PUT', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ spokenText: segment.spokenText, speakerId: segment.speakerId, direction: segment.direction }),
+    }), success, false);
+    if (result?.segment) setDetail((current: Detail) => ({
+      ...current,
+      project: result.project || current.project,
+      segments: current.segments.map(item => item.segmentId === result.segment.segmentId ? result.segment : item),
+    }));
+    return result;
+  };
+  const edit = (id: string, value: string) => setDetail((current: Detail) => ({ ...current, segments: current.segments.map(segment => segment.segmentId === id ? { ...segment, spokenText: value } : segment) }));
+  const changeSpeaker = async (segment: any, speakerId: string) => {
+    setDetail((current: Detail) => ({ ...current, segments: current.segments.map(item => item.segmentId === segment.segmentId ? { ...item, speakerId } : item) }));
+    await persistSegment({ ...segment, speakerId }, 'Locutor salvo; somente o áudio deste trecho foi invalidado.');
+  };
   const castingReady = detail.characters.length > 0 && detail.characters.every((character: any) => character.voiceAssignmentId || character.voiceAssignment?.voiceName);
-  return <><section className="panel"><div className="panel-title"><div><h2>Roteiro de locução</h2><p>Cada unidade mantém o texto-fonte, o locutor e a direção. Editar invalida apenas seu áudio.</p></div><WandSparkles size={21}/></div><div className="panel-actions"><Button busy={busy === 'script'} disabled={!castingReady} onClick={() => run('script', () => post(`/api/projects/${detail.project.projectId}/script`), 'Roteiro criado e validado contra a obra.')}><WandSparkles size={16}/>{!castingReady ? 'Conclua o elenco primeiro' : detail.segments.length ? 'Refazer roteiro' : 'Criar roteiro'}</Button></div></section>{detail.segments.length ? <div className="segments">{detail.segments.slice(0, 120).map((s: any, i: number) => <article className="segment" key={s.segmentId}><span className="segment-number">{i + 1}</span><div className="segment-main"><div className="segment-meta"><b>{detail.characters.find((c: any) => c.characterId === s.speakerId)?.canonicalName || 'Narrador'}</b><span>{s.type}</span><i className={s.status}>{s.status}</i></div><textarea value={s.spokenText || ''} onChange={e => edit(s.segmentId, e.target.value)}/><button onClick={() => saveSegment(s)}><Save size={14}/>Salvar trecho</button></div></article>)}</div> : <Empty icon={FileText} title="Roteiro ainda não gerado" text="Salve o elenco e gere unidades de locução revisáveis."/>}</>;
+  return <><section className="panel"><div className="panel-title"><div><h2>Roteiro de locução</h2><p>Cada unidade mantém o texto-fonte, o locutor e a direção. Alterações são salvas por trecho.</p></div><WandSparkles size={21}/></div><div className="panel-actions"><Button busy={busy === 'script'} disabled={!castingReady} onClick={() => run('script', () => post(`/api/projects/${detail.project.projectId}/script`), 'Roteiro criado e validado contra a obra.')}><WandSparkles size={16}/>{!castingReady ? 'Conclua o elenco primeiro' : detail.segments.length ? 'Refazer roteiro' : 'Criar roteiro'}</Button></div></section>{detail.segments.length ? <div className="segments">{detail.segments.slice(0, 120).map((segment: any, index: number) => <article className="segment" key={segment.segmentId}><span className="segment-number">{index + 1}</span><div className="segment-main"><div className="segment-meta"><select className="script-speaker-select" value={segment.speakerId || 'unresolved'} onChange={event => void changeSpeaker(segment, event.target.value)}><option value="unresolved">Locutor pendente</option>{detail.characters.map((character: any) => <option key={character.characterId} value={character.characterId}>{character.canonicalName}</option>)}</select><b>{detail.characters.find((character: any) => character.characterId === segment.speakerId)?.canonicalName || 'Locutor pendente'}</b><span>{segment.type}</span><i className={segment.status}>{segment.status}</i></div><textarea value={segment.spokenText || ''} onChange={event => edit(segment.segmentId, event.target.value)}/><button onClick={() => void persistSegment(segment)}><Save size={14}/>Salvar trecho</button></div></article>)}</div> : <Empty icon={FileText} title="Roteiro ainda não gerado" text="Salve o elenco e gere unidades de locução revisáveis."/>}</>;
 }
 
 function AudioPanel({ detail, setDetail, run, busy }: any) {
