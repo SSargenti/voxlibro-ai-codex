@@ -10,7 +10,10 @@ type Project = {
   translationEnabled: boolean; wordCount?: number; durationSeconds?: number; estimatedCost?: number;
   createdAt: string; detectedTitle?: string; recommendedProductionMode?: string;
 };
-type Detail = { project: Project; chapters: any[]; characters: any[]; segments: any[]; logs: any[]; contextSounds?: any[] };
+type Detail = {
+  project: Project; chapters: any[]; characters: any[]; segments: any[]; logs: any[]; contextSounds?: any[];
+  totalSegments?: number; segmentSummary?: Record<string, number>;
+};
 type StepId = 'source' | 'translation' | 'bible' | 'casting' | 'script' | 'audio' | 'export';
 
 const steps: { id: StepId; label: string; icon: any }[] = [
@@ -44,6 +47,8 @@ const post = (url: string, body?: unknown) => api(url, {
   method: 'POST', headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
   body: body === undefined ? undefined : JSON.stringify(body),
 });
+
+const loadWorkspace = (projectId: string) => api(`/api/projects/${projectId}/workspace?segmentLimit=120`);
 
 async function downloadProjectBackup(projectId: string, projectName: string) {
   const response = await fetch(`/api/projects/${projectId}/backup`, { method: 'POST' });
@@ -118,7 +123,7 @@ export default function App() {
   };
   const loadDetail = async (id = detail?.project.projectId) => {
     if (!id) return;
-    const data = await api(`/api/projects/${id}`);
+    const data = await loadWorkspace(id);
     setDetail(data);
     localStorage.setItem('voxlibro.project', id);
   };
@@ -131,7 +136,7 @@ export default function App() {
         setProjects(list);
         const savedId = localStorage.getItem('voxlibro.project');
         if (!savedId || !list.some((project: Project) => project.projectId === savedId)) return;
-        const data = await api(`/api/projects/${savedId}`);
+        const data = await loadWorkspace(savedId);
         if (cancelled) return;
         setDetail(data);
         const savedStep = localStorage.getItem(`voxlibro.step.${savedId}`) as StepId | null;
@@ -147,7 +152,7 @@ export default function App() {
   const openProject = async (id: string) => {
     setBusy('open');
     try {
-      const data = await api(`/api/projects/${id}`); setDetail(data); setView('workspace');
+      const data = await loadWorkspace(id); setDetail(data); setView('workspace');
       localStorage.setItem('voxlibro.project', id);
       const saved = localStorage.getItem(`voxlibro.step.${id}`) as StepId | null;
       setStep(saved && steps.some(s => s.id === saved) ? saved : 'source');
@@ -166,7 +171,7 @@ export default function App() {
       const resumeStep = steps.some(item => item.id === result.resumeStep) ? result.resumeStep as StepId : 'source';
       localStorage.setItem('voxlibro.project', projectId);
       localStorage.setItem(`voxlibro.step.${projectId}`, resumeStep);
-      const data = await api(`/api/projects/${projectId}`);
+      const data = await loadWorkspace(projectId);
       setDetail(data);
       setStep(resumeStep);
       setView('workspace');
@@ -316,6 +321,26 @@ function CastingPanel({ detail, setDetail, run, busy }: any) {
   return <section className="panel"><div className="panel-title"><div><h2>Elenco de vozes inteligente</h2><p>Sexo vocal, idade, timbre, energia, papel dramático, expressividade, provedor e custo entram na recomendação.</p></div><Mic2 size={21}/></div>{detail.characters.length === 0 ? <Empty icon={Users} title="Crie a bíblia primeiro" text="O casting depende dos personagens canônicos."/> : <div className="cast-list">{detail.characters.map((c: any) => { const selected = c.voiceAssignmentId || c.voiceRecommendations?.[0]?.voiceId || 'gemini:Kore'; const rec = c.voiceRecommendations?.find((item:any) => item.voiceId === selected) || c.voiceRecommendations?.[0]; return <div className="cast-row smart-cast" key={c.characterId}><div className="avatar">{c.canonicalName?.slice(0,1)}</div><div className="cast-name"><strong>{c.canonicalName}</strong><span>{c.role} · {c.voiceProfile?.gender || 'neutral'} · {c.voiceProfile?.age || 'adult'} · {c.voiceProfile?.timbre || 'neutral'}</span>{rec && <small><b>{rec.score}% compatível</b> — {rec.reasons?.join(', ')}</small>}</div><select value={selected} onChange={e => update(c.characterId, e.target.value)}>{options.map((v:any) => <option value={v.id} key={v.id} disabled={!v.available}>{v.label}{v.costTier ? ` · ${v.costTier}` : ''}{!v.available ? ' · indisponível' : ''}</option>)}</select><button className="icon-button" aria-label={`Ouvir ${c.canonicalName}`} onClick={() => preview(c.characterId, selected, c.canonicalName)}>{playing === c.characterId ? <LoaderCircle className="spin" size={18}/> : <Play size={18}/>}</button></div>; })}</div>}<div className="panel-actions"><Button busy={busy === 'voices'} disabled={!detail.characters.length} onClick={() => void save()}><Save size={16}/>Salvar elenco</Button></div></section>;
 }
 
+function SegmentPager({ detail, setDetail }: any) {
+  const pageSize = 120;
+  const total = detail.totalSegments ?? detail.segments.length;
+  const totalPages = Math.ceil(total / pageSize);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(false);
+  useEffect(() => { setPage(1); }, [detail.project.projectId]);
+  if (totalPages <= 1) return null;
+  const changePage = async (nextPage: number) => {
+    if (nextPage < 1 || nextPage > totalPages || loading) return;
+    setLoading(true);
+    try {
+      const data = await api(`/api/projects/${detail.project.projectId}/segments?page=${nextPage}&limit=${pageSize}`);
+      setDetail((current: Detail) => ({ ...current, segments: data.segments || [], totalSegments: data.total ?? current.totalSegments }));
+      setPage(nextPage);
+    } finally { setLoading(false); }
+  };
+  return <div className="panel-actions segment-pagination"><span>Exibindo {detail.segments.length} de {total.toLocaleString('pt-BR')} trechos · página {page} de {totalPages}</span><Button variant="quiet" disabled={loading || page === 1} onClick={() => void changePage(page - 1)}>Anterior</Button><Button variant="quiet" busy={loading} disabled={loading || page === totalPages} onClick={() => void changePage(page + 1)}>Próximos {Math.min(pageSize, total - page * pageSize)}</Button></div>;
+}
+
 function ScriptPanel({ detail, setDetail, run, busy }: any) {
   const persistSegment = async (segment: any, success = 'Trecho salvo; o áudio anterior foi invalidado.') => {
     const result = await run(`segment-${segment.segmentId}`, () => api(`/api/projects/${detail.project.projectId}/script-segments/${segment.segmentId}`, {
@@ -335,13 +360,17 @@ function ScriptPanel({ detail, setDetail, run, busy }: any) {
     await persistSegment({ ...segment, speakerId }, 'Locutor salvo; somente o áudio deste trecho foi invalidado.');
   };
   const castingReady = detail.characters.length > 0 && detail.characters.every((character: any) => character.voiceAssignmentId || character.voiceAssignment?.voiceName);
-  return <><section className="panel"><div className="panel-title"><div><h2>Roteiro de locução</h2><p>Cada unidade mantém o texto-fonte, o locutor e a direção. Alterações são salvas por trecho.</p></div><WandSparkles size={21}/></div><div className="panel-actions"><Button busy={busy === 'script'} disabled={!castingReady} onClick={() => run('script', () => post(`/api/projects/${detail.project.projectId}/script`), 'Roteiro criado e validado contra a obra.')}><WandSparkles size={16}/>{!castingReady ? 'Conclua o elenco primeiro' : detail.segments.length ? 'Refazer roteiro' : 'Criar roteiro'}</Button></div></section>{detail.segments.length ? <div className="segments">{detail.segments.slice(0, 120).map((segment: any, index: number) => <article className="segment" key={segment.segmentId}><span className="segment-number">{index + 1}</span><div className="segment-main"><div className="segment-meta"><select className="script-speaker-select" value={segment.speakerId || 'unresolved'} onChange={event => void changeSpeaker(segment, event.target.value)}><option value="unresolved">Locutor pendente</option>{detail.characters.map((character: any) => <option key={character.characterId} value={character.characterId}>{character.canonicalName}</option>)}</select><b>{detail.characters.find((character: any) => character.characterId === segment.speakerId)?.canonicalName || 'Locutor pendente'}</b><span>{segment.type}</span><i className={segment.status}>{segment.status}</i></div><textarea value={segment.spokenText || ''} onChange={event => edit(segment.segmentId, event.target.value)}/><button onClick={() => void persistSegment(segment)}><Save size={14}/>Salvar trecho</button></div></article>)}</div> : <Empty icon={FileText} title="Roteiro ainda não gerado" text="Salve o elenco e gere unidades de locução revisáveis."/>}</>;
+  return <><section className="panel"><div className="panel-title"><div><h2>Roteiro de locução</h2><p>Cada unidade mantém o texto-fonte, o locutor e a direção. Alterações são salvas por trecho.</p></div><WandSparkles size={21}/></div><div className="panel-actions"><Button busy={busy === 'script'} disabled={!castingReady} onClick={() => run('script', () => post(`/api/projects/${detail.project.projectId}/script`), 'Roteiro criado e validado contra a obra.')}><WandSparkles size={16}/>{!castingReady ? 'Conclua o elenco primeiro' : detail.segments.length ? 'Refazer roteiro' : 'Criar roteiro'}</Button></div></section>{detail.segments.length ? <><SegmentPager detail={detail} setDetail={setDetail}/><div className="segments">{detail.segments.map((segment: any, index: number) => <article className="segment" key={segment.segmentId}><span className="segment-number">{segment.order || index + 1}</span><div className="segment-main"><div className="segment-meta"><select className="script-speaker-select" value={segment.speakerId || 'unresolved'} onChange={event => void changeSpeaker(segment, event.target.value)}><option value="unresolved">Locutor pendente</option>{detail.characters.map((character: any) => <option key={character.characterId} value={character.characterId}>{character.canonicalName}</option>)}</select><b>{detail.characters.find((character: any) => character.characterId === segment.speakerId)?.canonicalName || 'Locutor pendente'}</b><span>{segment.type}</span><i className={segment.status}>{segment.status}</i></div><textarea value={segment.spokenText || ''} onChange={event => edit(segment.segmentId, event.target.value)}/><button onClick={() => void persistSegment(segment)}><Save size={14}/>Salvar trecho</button></div></article>)}</div></> : <Empty icon={FileText} title="Roteiro ainda não gerado" text="Salve o elenco e gere unidades de locução revisáveis."/>}</>;
 }
 
 function AudioPanel({ detail, setDetail, run, busy }: any) {
   const pending = detail.segments.filter((s: any) => s.status !== 'ready');
   const failedSegments = detail.segments.filter((s: any) => s.status === 'failed');
-  const ready = detail.segments.length - pending.length;
+  const totalSegments = detail.totalSegments ?? detail.segments.length;
+  const summary = detail.segmentSummary || {};
+  const ready = summary.ready ?? (detail.segments.length - pending.length);
+  const failedCount = summary.failed ?? failedSegments.length;
+  const pendingCount = Math.max(0, totalSegments - ready - failedCount);
   const chars = pending.reduce((n: number, s: any) => n + (s.spokenText?.length || 0), 0);
   const [pricing, setPricing] = useState<any>(null);
   const [confirmBatch, setConfirmBatch] = useState(false);
@@ -408,17 +437,19 @@ function AudioPanel({ detail, setDetail, run, busy }: any) {
 
   const running = busy === 'audio-all';
   return <>
-    <div className="stats"><Stat label="Prontos" value={`${ready}/${detail.segments.length}`}/><Stat label="Pendentes" value={pending.length}/><Stat label="Falhas" value={failedSegments.length}/><Stat label="Estimativa" value={`US$ ${estimatedUsd.toFixed(2)}`}/></div>
+    <div className="stats"><Stat label="Prontos" value={`${ready}/${totalSegments}`}/><Stat label="Pendentes" value={pendingCount}/><Stat label="Falhas" value={failedCount}/><Stat label="Lote visível" value={pending.length}/></div>
     <section className="panel">
       <div className="panel-title"><div><h2>Geração e revisão de áudio</h2><p>Os áudios aparecem assim que cada trecho termina. Falhas permanecem identificadas para nova tentativa seletiva.</p></div><CircleDollarSign size={21}/></div>
-      <div className="cost-box"><div><span>ESTIMATIVA ANTES DE GERAR</span><strong>US$ {estimatedUsd.toFixed(2)} · {chars.toLocaleString('pt-BR')} caracteres</strong><small>Referência {pricing?.pricingAsOf || 'vigente'}; duração Gemini estimada em 15 caracteres/s. O faturamento do provedor prevalece.</small></div>{confirmBatch ? <div className="panel-actions"><Button variant="quiet" disabled={running} onClick={() => setConfirmBatch(false)}>Cancelar</Button><Button busy={running} onClick={generateAll}>Confirmar {pending.length} trechos</Button></div> : <Button busy={running} disabled={!pending.length} onClick={() => setConfirmBatch(true)}><AudioLines size={16}/>{failedSegments.length ? 'Gerar pendentes e tentar falhas' : 'Gerar pendentes'}</Button>}</div>
+      {totalSegments > detail.segments.length && <div className="callout"><div><strong>Livro grande carregado em lotes</strong><span>Esta tela mostra somente {detail.segments.length} de {totalSegments.toLocaleString('pt-BR')} trechos. A geração abaixo atua apenas no lote visível para evitar travamento ou uma cobrança inesperada.</span></div></div>}
+      <div className="cost-box"><div><span>ESTIMATIVA DO LOTE VISÍVEL</span><strong>US$ {estimatedUsd.toFixed(2)} · {chars.toLocaleString('pt-BR')} caracteres</strong><small>Referência {pricing?.pricingAsOf || 'vigente'}; duração Gemini estimada em 15 caracteres/s. O faturamento do provedor prevalece.</small></div>{confirmBatch ? <div className="panel-actions"><Button variant="quiet" disabled={running} onClick={() => setConfirmBatch(false)}>Cancelar</Button><Button busy={running} onClick={generateAll}>Confirmar {pending.length} trechos</Button></div> : <Button busy={running} disabled={!pending.length} onClick={() => setConfirmBatch(true)}><AudioLines size={16}/>{failedSegments.length ? 'Gerar lote e tentar falhas' : 'Gerar lote visível'}</Button>}</div>
       {(running || progress.total > 0) && <div className="readiness"><span>{running ? <LoaderCircle className="spin"/> : progress.failures.length ? <Gauge/> : <Check/>}</span><div><strong>{running ? `Gerando ${Math.min(progress.completed + 1, progress.total)} de ${progress.total}` : `${progress.completed} de ${progress.total} processados`}</strong><p>{progress.failures.length ? `${progress.failures.length} falharam; veja os trechos destacados abaixo.` : 'Os concluídos já estão disponíveis na lista.'}</p></div></div>}
       {progress.failures.length > 0 && <div className="callout"><div><strong>Falhas deste lote</strong><span>{progress.failures.map(item => `#${item.order} — ${item.message}`).join(' | ')}</span></div></div>}
     </section>
     <ContextSoundPanel detail={detail} run={run} busy={busy}/>
+    <SegmentPager detail={detail} setDetail={setDetail}/>
     <div className="audio-list">{detail.segments.map((s: any, i: number) => {
       const errorMessage = s.lastError?.message || s.lastError?.error?.message || '';
-      return <div key={s.segmentId} className={s.status === 'failed' ? 'failed' : ''}><span>{String(i + 1).padStart(3,'0')}</span><div><strong>{s.spokenText?.slice(0, 90)}</strong><small>{s.status === 'failed' ? `FALHOU${errorMessage ? ` · ${errorMessage}` : ''}` : `${s.status} · ${s.durationMs ? `${Math.round(s.durationMs/1000)}s` : 'sem áudio'}`}</small></div>{s.contextualAudioPath || s.audioPath ? <audio controls preload="metadata" src={s.contextualAudioPath || s.audioPath}/> : <Button variant="quiet" busy={busy === s.segmentId} disabled={running} onClick={() => run(s.segmentId, async () => { const result = await post(`/api/projects/${detail.project.projectId}/segments/${s.segmentId}/tts`); if (result?.segment) applySegmentResult(result.segment, result.project); return result; }, s.status === 'failed' ? 'Trecho regenerado.' : 'Trecho gerado.')}><Play size={15}/>{s.status === 'failed' ? 'Tentar novamente' : 'Gerar'}</Button>}</div>;
+      return <div key={s.segmentId} className={s.status === 'failed' ? 'failed' : ''}><span>{String(s.order || i + 1).padStart(3,'0')}</span><div><strong>{s.spokenText?.slice(0, 90)}</strong><small>{s.status === 'failed' ? `FALHOU${errorMessage ? ` · ${errorMessage}` : ''}` : `${s.status} · ${s.durationMs ? `${Math.round(s.durationMs/1000)}s` : 'sem áudio'}`}</small></div>{s.contextualAudioPath || s.audioPath ? <audio controls preload="metadata" src={s.contextualAudioPath || s.audioPath}/> : <Button variant="quiet" busy={busy === s.segmentId} disabled={running} onClick={() => run(s.segmentId, async () => { const result = await post(`/api/projects/${detail.project.projectId}/segments/${s.segmentId}/tts`); if (result?.segment) applySegmentResult(result.segment, result.project); return result; }, s.status === 'failed' ? 'Trecho regenerado.' : 'Trecho gerado.')}><Play size={15}/>{s.status === 'failed' ? 'Tentar novamente' : 'Gerar'}</Button>}</div>;
     })}</div>
   </>;
 }
