@@ -1052,7 +1052,9 @@ export function checkAndUpdateProjectStatusToReviewing(projectId: string) {
     console.log(`[C12] Project ${projectId} entered 'reviewing' status as all segments are ready and validated.`);
   } else {
     if (project.status === 'reviewing') {
-      project.status = 'generating_audio';
+      // An edited voice invalidates audio, but it never starts a new
+      // generation on its own. The user must explicitly authorize a batch.
+      project.status = 'awaiting_audio_generation';
       project.updatedAt = new Date().toISOString();
       saveProjects(projects);
     }
@@ -5608,7 +5610,9 @@ ${JSON.stringify(batchUnits.map((u: any) => ({ sourceUnitId: u.sourceUnitId, typ
     const reportFile = path.join(scriptsDir, 'script-report.json');
     fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
 
-    project.status = scriptComplete ? 'generating_audio' : 'scripting';
+    // Script completion only makes audio generation available. It must not
+    // imply that provider calls have already started.
+    project.status = scriptComplete ? 'awaiting_audio_generation' : 'scripting';
     project.updatedAt = new Date().toISOString();
     saveProjects(getProjects().map((p) => (p.projectId === projectId ? project : p)));
 
@@ -7444,7 +7448,9 @@ export function syncCompletedJobFiles(job: Job) {
     const reportFile = path.join(scriptsDir, 'script-report.json');
     fs.writeFileSync(reportFile, JSON.stringify(report, null, 2));
 
-    project.status = 'generating_audio';
+    // Background script generation has finished. Wait for an explicit audio
+    // action instead of presenting a false "generating" state.
+    project.status = scriptComplete ? 'awaiting_audio_generation' : 'scripting';
     project.updatedAt = new Date().toISOString();
     saveProjects(projects);
 
