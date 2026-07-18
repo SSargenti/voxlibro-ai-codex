@@ -15,6 +15,7 @@ import {
   withAudiobookContextReviewPolicy,
 } from './src/audiobookNarrationPolicy';
 import { registerAudiobookNarrationPolicyRoutes } from './src/audiobookNarrationPolicyRoutes';
+import { registerVoiceScriptPersistenceRoutes } from './src/voiceScriptPersistence';
 
 async function bootstrap() {
   const previousVitest = process.env.VITEST;
@@ -47,6 +48,7 @@ async function bootstrap() {
 
   registerAudiobookNarrationPolicyRoutes(server.app, storageProvider);
   registerAudiobookNarrationPolicy(server.app, storageProvider);
+  registerVoiceScriptPersistenceRoutes(server.app, storageProvider);
 
   registerScriptGenerationJobRoutes(server.app, storageProvider, {
     generateContent: args => server.ai.models.generateContent(args),
