@@ -89,7 +89,9 @@ describe('persistência de atribuição de voz', () => {
     expect(fs.existsSync(path.join(projectDir, 'audio', 'segments', 'seg_2.wav'))).toBe(false);
     expect(fs.existsSync(path.join(projectDir, 'audio', 'segments', 'seg_3.wav'))).toBe(true);
     const segments = JSON.parse(fs.readFileSync(path.join(projectDir, 'scripts', 'segments.json'), 'utf8'));
-    expect(segments.find((segment: any) => segment.segmentId === 'seg_2')).toMatchObject({ status: 'pending', audioPath: undefined });
+    const changed = segments.find((segment: any) => segment.segmentId === 'seg_2');
+    expect(changed.status).toBe('pending');
+    expect(Object.prototype.hasOwnProperty.call(changed, 'audioPath')).toBe(false);
   });
 
   it('no audiolivro, uma mudança da voz do narrador invalida todos os trechos', () => {
