@@ -95,7 +95,8 @@ describe('política de narrador único para audiolivro', () => {
     expect(dialogue.status).toBe('pending');
     expect(fs.existsSync(path.join(projectDir, 'audio', 'segments', 'seg_2.wav'))).toBe(false);
     expect(result.scriptReport).toMatchObject({ coverage: 100, totalUnresolved: 0, scriptComplete: true, status: 'PASS' });
-    expect(result.project.status).toBe('generating_audio');
+    expect(result.finalReport).toMatchObject({ status: 'REVIEW', narrationMode: 'single_narrator', pendingFinalAuditSuggestions: 1 });
+    expect(result.project?.status).toBe('scripting');
   });
 
   it('remove sugestões de troca de voz e mantém ajustes de interpretação', () => {
