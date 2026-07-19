@@ -16,6 +16,7 @@ import {
 } from './src/audiobookNarrationPolicy';
 import { registerAudiobookNarrationPolicyRoutes } from './src/audiobookNarrationPolicyRoutes';
 import { registerVoiceScriptPersistenceRoutes } from './src/voiceScriptPersistence';
+import { registerAudioGenerationJobRoutes } from './src/audioGenerationJob';
 
 async function bootstrap() {
   const previousVitest = process.env.VITEST;
@@ -49,6 +50,20 @@ async function bootstrap() {
   registerAudiobookNarrationPolicyRoutes(server.app, storageProvider);
   registerAudiobookNarrationPolicy(server.app, storageProvider);
   registerVoiceScriptPersistenceRoutes(server.app, storageProvider);
+  registerAudioGenerationJobRoutes(server.app, storageProvider, {
+    generateSegment: async (projectId, segmentId) => {
+      const port = Number(process.env.PORT || 3000);
+      const response = await fetch(`http://127.0.0.1:${port}/api/projects/${encodeURIComponent(projectId)}/segments/${encodeURIComponent(segmentId)}/tts`, { method: 'POST' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const error: any = new Error(payload?.error?.message || payload?.error || `Falha HTTP ${response.status}`);
+        error.status = response.status;
+        error.payload = payload;
+        throw error;
+      }
+      return payload;
+    },
+  });
 
   registerScriptGenerationJobRoutes(server.app, storageProvider, {
     generateContent: args => server.ai.models.generateContent(args),

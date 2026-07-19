@@ -374,8 +374,37 @@ function AudioPanel({ detail, setDetail, run, busy }: any) {
   const chars = pending.reduce((n: number, s: any) => n + (s.spokenText?.length || 0), 0);
   const [pricing, setPricing] = useState<any>(null);
   const [confirmBatch, setConfirmBatch] = useState(false);
+  const [continuousJob, setContinuousJob] = useState<any>(null);
+  const [continuousBusy, setContinuousBusy] = useState(false);
+  const [continuousPoll, setContinuousPoll] = useState(0);
   const [progress, setProgress] = useState<{ completed: number; total: number; failures: { segmentId: string; order: number; message: string }[] }>({ completed: 0, total: 0, failures: [] });
   useEffect(() => { api('/api/pricing').then(setPricing).catch(() => {}); }, []);
+  useEffect(() => {
+    let stopped = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch(`/api/projects/${encodeURIComponent(detail.project.projectId)}/audio-generation/status`, { cache: 'no-store' });
+        if (response.ok) {
+          const payload = await response.json();
+          if (stopped) return;
+          const job = payload.job;
+          setContinuousJob(job);
+          setDetail((current: Detail) => ({
+            ...current,
+            segmentSummary: { ...current.segmentSummary, ready: job.completedSegments, failed: job.failedSegments },
+          }));
+          if (['queued', 'processing'].includes(job.status)) timer = window.setTimeout(poll, 1200);
+          else if (job.status === 'completed') {
+            const refreshed = await loadWorkspace(detail.project.projectId);
+            if (!stopped) setDetail(refreshed);
+          }
+        }
+      } catch { /* A geração manual continua disponível mesmo sem um job. */ }
+    };
+    void poll();
+    return () => { stopped = true; if (timer) window.clearTimeout(timer); };
+  }, [detail.project.projectId, continuousPoll]);
   const estimatedUsd = useMemo(() => pending.reduce((total: number, segment: any) => {
     const count = segment.spokenText?.length || 0;
     const character = detail.characters.find((c: any) => c.characterId === segment.speakerId);
@@ -435,13 +464,35 @@ function AudioPanel({ detail, setDetail, run, busy }: any) {
     }, 'Áudios pendentes gerados e disponibilizados.');
   };
 
+  const startContinuous = async () => {
+    setContinuousBusy(true);
+    try {
+      const payload = await post(`/api/projects/${detail.project.projectId}/audio-generation/start`, { maxRetries: 3 });
+      setContinuousJob(payload.job);
+      setContinuousPoll(value => value + 1);
+    } catch (error: any) { window.alert(error.message); }
+    finally { setContinuousBusy(false); }
+  };
+  const cancelContinuous = async () => {
+    setContinuousBusy(true);
+    try {
+      const payload = await post(`/api/projects/${detail.project.projectId}/audio-generation/cancel`);
+      setContinuousJob(payload.job);
+    } catch (error: any) { window.alert(error.message); }
+    finally { setContinuousBusy(false); }
+  };
+
   const running = busy === 'audio-all';
+  const continuousRunning = ['queued', 'processing'].includes(continuousJob?.status);
   return <>
     <div className="stats"><Stat label="Prontos" value={`${ready}/${totalSegments}`}/><Stat label="Pendentes" value={pendingCount}/><Stat label="Falhas" value={failedCount}/><Stat label="Lote visível" value={pending.length}/></div>
     <section className="panel">
       <div className="panel-title"><div><h2>Geração e revisão de áudio</h2><p>Os áudios aparecem assim que cada trecho termina. Falhas permanecem identificadas para nova tentativa seletiva.</p></div><CircleDollarSign size={21}/></div>
+      <div className="callout"><div><strong>Geração contínua em lotes de 120</strong><span>O servidor inicia cada lote automaticamente, salva um checkpoint por trecho e continua mesmo se esta página for fechada ou o serviço reiniciar.</span></div><div className="panel-actions">{continuousRunning ? <Button variant="quiet" busy={continuousBusy} onClick={() => void cancelContinuous()}>Cancelar geração</Button> : <Button busy={continuousBusy} disabled={ready >= totalSegments} onClick={() => void startContinuous()}><AudioLines size={16}/>{continuousJob?.status === 'failed' || continuousJob?.status === 'cancelled' ? 'Retomar do ponto de parada' : 'Gerar todos automaticamente'}</Button>}</div></div>
+      {continuousJob && <div className={`readiness ${continuousJob.status === 'completed' ? 'complete' : ''}`}><span>{continuousRunning ? <LoaderCircle className="spin"/> : continuousJob.status === 'completed' ? <Check/> : <Gauge/>}</span><div><strong>{continuousRunning ? `Lote ${continuousJob.currentBatch} de ${continuousJob.totalBatches} · trecho ${continuousJob.currentSegmentOrder || '-'} de ${continuousJob.totalSegments}` : continuousJob.status === 'completed' ? 'Geração contínua concluída' : continuousJob.status === 'failed' ? 'Geração pausada por erro' : 'Geração cancelada'}</strong><p>{continuousJob.completedSegments} concluídos · {continuousJob.pendingSegments} pendentes · {continuousJob.failedSegments} falhos{continuousJob.retryAttempt > 1 ? ` · tentativa ${continuousJob.retryAttempt}/${continuousJob.maxRetries + 1}` : ''}</p></div></div>}
+      {continuousJob?.lastError && <div className="callout"><div><strong>{continuousJob.lastError.code} · segmento {continuousJob.lastError.segmentId}</strong><span>{continuousJob.lastError.message} · {continuousJob.lastError.retryable ? 'Tentativas automáticas esgotadas; você pode retomar.' : 'Erro não recuperável; corrija a causa antes de retomar.'}</span></div></div>}
       {totalSegments > detail.segments.length && <div className="callout"><div><strong>Livro grande carregado em lotes</strong><span>Esta tela mostra somente {detail.segments.length} de {totalSegments.toLocaleString('pt-BR')} trechos. A geração abaixo atua apenas no lote visível para evitar travamento ou uma cobrança inesperada.</span></div></div>}
-      <div className="cost-box"><div><span>ESTIMATIVA DO LOTE VISÍVEL</span><strong>US$ {estimatedUsd.toFixed(2)} · {chars.toLocaleString('pt-BR')} caracteres</strong><small>Referência {pricing?.pricingAsOf || 'vigente'}; duração Gemini estimada em 15 caracteres/s. O faturamento do provedor prevalece.</small></div>{confirmBatch ? <div className="panel-actions"><Button variant="quiet" disabled={running} onClick={() => setConfirmBatch(false)}>Cancelar</Button><Button busy={running} onClick={generateAll}>Confirmar {pending.length} trechos</Button></div> : <Button busy={running} disabled={!pending.length} onClick={() => setConfirmBatch(true)}><AudioLines size={16}/>{failedSegments.length ? 'Gerar lote e tentar falhas' : 'Gerar lote visível'}</Button>}</div>
+      <div className="cost-box"><div><span>ESTIMATIVA DO LOTE VISÍVEL</span><strong>US$ {estimatedUsd.toFixed(2)} · {chars.toLocaleString('pt-BR')} caracteres</strong><small>Modo manual preservado: gera somente os 120 trechos visíveis. Referência {pricing?.pricingAsOf || 'vigente'}.</small></div>{confirmBatch ? <div className="panel-actions"><Button variant="quiet" disabled={running} onClick={() => setConfirmBatch(false)}>Cancelar</Button><Button busy={running} onClick={generateAll}>Confirmar {pending.length} trechos</Button></div> : <Button busy={running} disabled={!pending.length || continuousRunning} onClick={() => setConfirmBatch(true)}><AudioLines size={16}/>{failedSegments.length ? 'Gerar lote e tentar falhas' : 'Gerar lote visível'}</Button>}</div>
       {(running || progress.total > 0) && <div className="readiness"><span>{running ? <LoaderCircle className="spin"/> : progress.failures.length ? <Gauge/> : <Check/>}</span><div><strong>{running ? `Gerando ${Math.min(progress.completed + 1, progress.total)} de ${progress.total}` : `${progress.completed} de ${progress.total} processados`}</strong><p>{progress.failures.length ? `${progress.failures.length} falharam; veja os trechos destacados abaixo.` : 'Os concluídos já estão disponíveis na lista.'}</p></div></div>}
       {progress.failures.length > 0 && <div className="callout"><div><strong>Falhas deste lote</strong><span>{progress.failures.map(item => `#${item.order} — ${item.message}`).join(' | ')}</span></div></div>}
     </section>
