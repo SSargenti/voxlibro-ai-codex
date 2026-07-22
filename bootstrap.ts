@@ -17,6 +17,7 @@ import {
 import { registerAudiobookNarrationPolicyRoutes } from './src/audiobookNarrationPolicyRoutes';
 import { registerVoiceScriptPersistenceRoutes } from './src/voiceScriptPersistence';
 import { registerAudioGenerationJobRoutes } from './src/audioGenerationJob';
+import { registerTranslationGenerationJobRoutes } from './src/translationGenerationJob';
 
 async function bootstrap() {
   const previousVitest = process.env.VITEST;
@@ -37,6 +38,27 @@ async function bootstrap() {
   cleanupStaleCharacterAnalysisStages(storageProvider());
   registerProjectBackupRoutes(server.app, storageProvider);
   registerProjectCostEstimateRoutes(server.app, storageProvider);
+  registerTranslationGenerationJobRoutes(server.app, storageProvider, {
+    hasTextAi: server.hasTextAi,
+    translateChunk: async request => server.runTaskForItem('translation', {
+      itemId: request.unitId,
+      jobId: request.jobId,
+      status: 'processing',
+      attempts: 1,
+      inputHash: '',
+      model: server.TEXT_MODELS.editorial,
+      promptVersion: 'resumable-v1',
+      configurationHash: '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      payload: request,
+    } as any),
+    legacyCompletedChunks: projectId => server.getJobs()
+      .filter((job: any) => job.projectId === projectId && job.operation === 'translation')
+      .flatMap((job: any) => job.items || [])
+      .filter((item: any) => item.status === 'completed' && item.result?.translatedText)
+      .map((item: any) => ({ chapterId: item.payload.chapterId, chunkIndex: item.payload.chunkIndex, inputHash: item.inputHash, translatedText: item.result.translatedText })),
+  });
   registerTranslationMemoryRoutes(server.app, storageProvider, {
     startProjectJob: server.startProjectJob,
   });

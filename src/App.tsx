@@ -77,9 +77,14 @@ async function finishQueuedJob(projectId: string, started: any) {
   let job = started?.job;
   if (!job) return started;
   for (let i = 0; i < 10000 && !['completed', 'failed', 'cancelled'].includes(job.status); i++) {
-    const next = await post(`/api/projects/${projectId}/jobs/process-next`);
+    const persistentTranslation = String(job.jobId || '').startsWith('translation_job_');
+    if (persistentTranslation) await new Promise(resolve => window.setTimeout(resolve, 1200));
+    const next = persistentTranslation
+      ? await api(`/api/projects/${projectId}/translation/status`, { cache: 'no-store' })
+      : await post(`/api/projects/${projectId}/jobs/process-next`);
     job = next.job;
   }
+  if (job.status === 'cancelled') throw new Error('Processamento cancelado. Todo o trabalho concluído foi preservado.');
   if (job.status !== 'completed') throw new Error(job?.lastError?.message || `Job encerrado com status ${job.status}`);
   return job;
 }
