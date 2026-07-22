@@ -144,6 +144,7 @@ function installTranslationMemoryWidget() {
   let statusText = '';
   let statusKind: 'normal' | 'warning' | 'error' = 'normal';
   let progress = 0;
+  let monitorToken = 0;
   const projectId = () => localStorage.getItem('voxlibro.project') || '';
 
   const render = () => {
@@ -203,6 +204,12 @@ function installTranslationMemoryWidget() {
     translateButton.disabled = busy || entries.some(entry => !entry.sourceTerm.trim() || !entry.preferredTranslation.trim());
     translateButton.addEventListener('click', () => void translate());
     actions.append(saveButton, translateButton);
+    if (busy) {
+      const cancelButton = element('button', '', 'Cancelar processamento');
+      cancelButton.type = 'button';
+      cancelButton.addEventListener('click', () => void cancelTranslation());
+      actions.appendChild(cancelButton);
+    }
     body.appendChild(actions);
 
     if (statusText) {
@@ -266,6 +273,20 @@ function installTranslationMemoryWidget() {
       statusText = entries.length ? `${entries.length} termo(s) persistente(s) carregado(s).` : 'Nenhum termo fixado. Sugira nomes recorrentes ou adicione manualmente.';
       statusKind = 'normal';
       render();
+      try {
+        const current = await api(`/api/projects/${encodeURIComponent(id)}/translation/status`, { cache: 'no-store' });
+        if (['queued', 'processing'].includes(current?.job?.status) && !busy) {
+          busy = true;
+          void monitor(id, current.job, ++monitorToken);
+        } else if (current?.job?.status === 'failed') {
+          const job = current.job;
+          setStatus(`Pausada no capítulo ${job.currentChapterId || 'desconhecido'}: ${job.lastError?.message || 'falha não identificada'}. Clique em Traduzir para retomar do ponto salvo.`, 'error', Number(job.progress || 0));
+        } else if (current?.job?.status === 'cancelled') {
+          setStatus(`Processamento cancelado em ${Number(current.job.progress || 0)}%. Os ${Number(current.job.completedUnits || 0)} trecho(s) concluídos foram preservados.`, 'warning', Number(current.job.progress || 0));
+        }
+      } catch {
+        // Ainda não existe um job de tradução para este projeto.
+      }
     } catch (error: any) {
       setStatus(error?.message || 'Não foi possível carregar a memória da tradução.', 'error');
     }
@@ -311,25 +332,49 @@ function installTranslationMemoryWidget() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ style: 'literário' }),
       });
-      let job = started.job;
+      const job = started.job;
       setStatus(`Tradução iniciada com ${started.glossaryEntries || 0} termo(s) de memória.`, 'normal', Number(job?.progress || 0));
-      for (let iteration = 0; iteration < 10000 && job && !['completed', 'failed', 'cancelled'].includes(job.status); iteration++) {
-        const next = await api(`/api/projects/${encodeURIComponent(id)}/jobs/process-next`, { method: 'POST' });
-        job = next.job;
-        setStatus(`Traduzindo a obra automaticamente… ${Number(job?.progress || 0)}%`, 'normal', Number(job?.progress || 0));
-      }
-      if (!job || job.status !== 'completed') throw new Error(job?.lastError?.message || `A tradução terminou com status ${job?.status || 'desconhecido'}.`);
-      const audit = await api(`/api/projects/${encodeURIComponent(id)}/translation/glossary/audit`, { method: 'POST' });
-      const issueCount = Number(audit?.report?.issues?.length || 0);
-      setStatus(issueCount
-        ? `Tradução concluída. A memória encontrou ${issueCount} capítulo(s) para revisão terminológica.`
-        : 'Tradução integral concluída e memória terminológica consistente.', issueCount ? 'warning' : 'normal', 100);
-      clickWorkspaceRefresh();
+      await monitor(id, job, ++monitorToken);
     } catch (error: any) {
       setStatus(error?.message || 'A tradução automatizada falhou.', 'error');
-    } finally {
+    } finally { if (busy) { busy = false; render(); } }
+  };
+
+  const monitor = async (id: string, initialJob: any, token: number) => {
+    let job = initialJob;
+    while (job && ['queued', 'processing'].includes(job.status) && token === monitorToken) {
+      setStatus(`Traduzindo capítulo ${job.completedChapters + 1} de ${job.totalChapters} · ${job.completedUnits}/${job.totalUnits} trechos concluídos.`, 'normal', Number(job.progress || 0));
+      await new Promise(resolve => window.setTimeout(resolve, 1500));
+      job = (await api(`/api/projects/${encodeURIComponent(id)}/translation/status`, { cache: 'no-store' })).job;
+      if (Number(job.completedChapters || 0) > 0) clickWorkspaceRefresh();
+    }
+    if (token !== monitorToken || !job) return;
+    busy = false;
+    if (job.status === 'completed') {
+      const audit = await api(`/api/projects/${encodeURIComponent(id)}/translation/glossary/audit`, { method: 'POST' });
+      const issueCount = Number(audit?.report?.issues?.length || 0);
+      setStatus(issueCount ? `Tradução concluída. ${issueCount} capítulo(s) pedem revisão terminológica.` : 'Tradução integral concluída e memória terminológica consistente.', issueCount ? 'warning' : 'normal', 100);
+      clickWorkspaceRefresh();
+    } else if (job.status === 'cancelled') {
+      setStatus(`Processamento cancelado. ${job.completedUnits}/${job.totalUnits} trechos e ${job.completedChapters}/${job.totalChapters} capítulos foram preservados.`, 'warning', Number(job.progress || 0));
+      clickWorkspaceRefresh();
+    } else {
+      setStatus(`Pausada no capítulo ${job.currentChapterId || 'desconhecido'}, trecho ${job.currentUnitId || 'desconhecido'}, após ${job.lastError?.attempt || 0} tentativa(s): ${job.lastError?.message || 'falha não identificada'}. Clique em Traduzir para retomar.`, 'error', Number(job.progress || 0));
+    }
+    render();
+  };
+
+  const cancelTranslation = async () => {
+    const id = projectId();
+    if (!id) return;
+    try {
+      const result = await api(`/api/projects/${encodeURIComponent(id)}/translation/cancel`, { method: 'POST' });
+      monitorToken++;
       busy = false;
-      render();
+      setStatus(`Processamento cancelado. ${result.job.completedUnits}/${result.job.totalUnits} trechos concluídos foram preservados.`, 'warning', Number(result.job.progress || 0));
+      clickWorkspaceRefresh();
+    } catch (error: any) {
+      setStatus(error?.message || 'Não foi possível cancelar o processamento.', 'error');
     }
   };
 

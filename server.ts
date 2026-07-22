@@ -7726,21 +7726,25 @@ export async function runTaskForItem(operation: string, item: JobItem): Promise<
     }
 
     // 2. Fetch context (limited context from preceding and succeeding chunk)
-    let contextPrefix = '';
-    let contextSuffix = '';
+    let contextPrefix = item.payload.contextBefore
+      ? `[CONTEXTO ANTERIOR — NÃO TRADUZIR NOVAMENTE]\n...${item.payload.contextBefore}\n[FIM DO CONTEXTO ANTERIOR]\n\n`
+      : '';
+    let contextSuffix = item.payload.contextAfter
+      ? `\n\n[CONTEXTO SEGUINTE — NÃO TRADUZIR NOVAMENTE]\n${item.payload.contextAfter}...\n[FIM DO CONTEXTO SEGUINTE]`
+      : '';
 
     try {
       const jobs = getJobs();
       const job = jobs.find(j => j.jobId === item.jobId);
       if (job) {
-        if (item.payload.chunkIndex > 0) {
+        if (!contextPrefix && item.payload.chunkIndex > 0) {
           const prevItem = job.items.find(it => it.payload.chapterId === item.payload.chapterId && it.payload.chunkIndex === item.payload.chunkIndex - 1);
           if (prevItem && prevItem.payload.text) {
             const lastPart = prevItem.payload.text.slice(-1000);
             contextPrefix = `[CONTEXTO ANTERIOR — NÃO TRADUZIR NOVAMENTE]\n...${lastPart}\n[FIM DO CONTEXTO ANTERIOR]\n\n`;
           }
         }
-        if (item.payload.chunkIndex < item.payload.totalChunks - 1) {
+        if (!contextSuffix && item.payload.chunkIndex < item.payload.totalChunks - 1) {
           const nextItem = job.items.find(it => it.payload.chapterId === item.payload.chapterId && it.payload.chunkIndex === item.payload.chunkIndex + 1);
           if (nextItem && nextItem.payload.text) {
             const firstPart = nextItem.payload.text.slice(0, 1000);

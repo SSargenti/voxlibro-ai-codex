@@ -204,6 +204,7 @@ function installTranslatedBookWidget() {
   let activeProject = '';
   let wasVisible = false;
   let controller: AbortController | null = null;
+  let refreshTimer = 0;
 
   const load = async (force = false) => {
     const visible = visibleStage();
@@ -211,6 +212,7 @@ function installTranslatedBookWidget() {
     dock.hidden = !visible || !projectId;
     if (!visible || !projectId) {
       wasVisible = false;
+      window.clearTimeout(refreshTimer);
       return;
     }
 
@@ -234,6 +236,8 @@ function installTranslatedBookWidget() {
       if (!response.ok) throw new Error(data?.error?.message || 'O livro traduzido ficará disponível após a extração e a tradução.');
       title.querySelector('small')!.textContent = data.title || 'Produto independente da geração de áudio';
       render(body, data as TranslatedBookStatus);
+      window.clearTimeout(refreshTimer);
+      if (!data.ready) refreshTimer = window.setTimeout(() => void load(true), 10_000);
     } catch (error: any) {
       if (error?.name === 'AbortError') return;
       body.replaceChildren(node('div', 'translated-book-error', error?.message || 'Não foi possível preparar o livro traduzido.'));

@@ -158,6 +158,15 @@ function inferResumeStep(projectDir: string): ProjectBackupManifest['resumeStep'
     }
   }
   if (fs.existsSync(path.join(projectDir, 'narrative-bible', 'characters.json'))) return 'script';
+  const generationJobPath = path.join(projectDir, 'translation', 'generation-job.json');
+  if (fs.existsSync(generationJobPath)) {
+    try {
+      const job = JSON.parse(fs.readFileSync(generationJobPath, 'utf8'));
+      if (job?.status !== 'completed') return 'translation';
+    } catch {
+      return 'translation';
+    }
+  }
   if (fs.existsSync(path.join(projectDir, 'translation', 'report.json'))) return 'bible';
   if (fs.existsSync(path.join(projectDir, 'normalized', 'chapters.json'))) return 'bible';
   return 'source';
